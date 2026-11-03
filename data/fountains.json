@@ -1,0 +1,50 @@
+[
+  {
+    "id": "f1",
+    "name": "Fontanella Campo San Luca",
+    "lat": 45.4353,
+    "lng": 12.3347,
+    "status": "Potable Cold Water • Active",
+    "veraNote": "Near 15th-C. wellhead"
+  },
+  {
+    "id": "f2",
+    "name": "Fontanella Campo Santo Stefano",
+    "lat": 45.4328,
+    "lng": 12.3304,
+    "status": "Potable Cold Water • Active",
+    "veraNote": "Accademia–San Marco corridor"
+  },
+  {
+    "id": "f3",
+    "name": "Fontanella Campo San Barnaba",
+    "lat": 45.4332,
+    "lng": 12.3253,
+    "status": "Potable Cold Water • Active",
+    "veraNote": "Beside Ca' Rezzonico"
+  },
+  {
+    "id": "f4",
+    "name": "Fontanella Fondamenta San Giacomo",
+    "lat": 45.4252,
+    "lng": 12.3315,
+    "status": "Potable Cold Water • Active",
+    "veraNote": "Adjacent to Redentore"
+  },
+  {
+    "id": "f5",
+    "name": "Fontanella San Giacomo dall'Orio",
+    "lat": 45.4401,
+    "lng": 12.3279,
+    "status": "Potable Cold Water • Active",
+    "veraNote": "Near Natural History Museum"
+  },
+  {
+    "id": "f6",
+    "name": "Fontanella Museo del Vetro Murano",
+    "lat": 45.4561,
+    "lng": 12.356,
+    "status": "Potable Cold Water • Active",
+    "veraNote": "Near Murano canal dock"
+  }
+]

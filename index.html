@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ancient Venice | WPI Historical & Archaeological Navigator</title>
+  <meta name="description" content="Explore Venice's historic landmarks, build themed walking routes, and browse WPI research records." />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body class="bg-[#F9F6F0] text-[#1A252C]">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    // Haversine Real-World Distance Calculator (Meters)
+    function getDistanceMeters(lat1, lon1, lat2, lon2) {
+      const R = 6371e3;
+      const toRad = (d) => (d * Math.PI) / 180;
+      const a =
+        Math.sin(toRad(lat2 - lat1) / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(toRad(lon2 - lon1) / 2) ** 2;
+      return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+    }
+
+    // Complete Dataset combining Tour Information + WPI IQPs + GNA
+    let VENICE_SITES = [];
+    let DRINKING_FOUNTAINS = [];
+
+    const PRESET_ROUTES = [
+      { id: 'palaces', title: "Aristocratic Palaces to Public Museums", duration: "Santa Croce & Dorsoduro walk", stops: ['ca-pesaro', 'natural-history-fondaco', 'scuola-san-giovanni', 'ca-rezzonico', 'peggy-guggenheim'], tags: ["Adaptive Reuse", "Politics & Republic"] },
+      { id: 'plague', title: "Plague, Quarantines & Votive Architecture", duration: "San Marco & Dorsoduro walk", stops: ['st-marks-basilica', 'salute-plague-votive', 'campo-san-barnaba-altar', 'peggy-guggenheim'], tags: ["Bubonic Plague", "Religious"] },
+      { id: 'guilds', title: "Medieval Guilds & Venetian Commerce", duration: "San Polo & Santa Croce walk", stops: ['rialto-bridge', 'calle-dei-fuseri', 'scuola-san-giovanni', 'ca-pesaro'], tags: ["Guilds & Glass", "Napoleonic & Industrial"] }
+    ];
+
+    function App() {
+      const [dataReady, setDataReady] = useState(false);
+      const [dataLoadError, setDataLoadError] = useState('');
+      const [dataLoadAttempt, setDataLoadAttempt] = useState(0);
+      const [activeMode, setActiveMode] = useState('route-builder');
+      const [googleMapTileStyle, setGoogleMapTileStyle] = useState('roadmap');
+      const [selectedStopIds, setSelectedStopIds] = useState(['st-marks-basilica', 'calle-dei-fuseri', 'rialto-bridge', 'ca-rezzonico', 'peggy-guggenheim']);
+      const [selectedTags, setSelectedTags] = useState(['Adaptive Reuse', 'Bubonic Plague', 'Guilds & Glass']);
+      const [accessibleOnly, setAccessibleOnly] = useState(false);
+      const [activeRouteIds, setActiveRouteIds] = useState([]);
+      const [routeLegs, setRouteLegs] = useState([]);
+      const [routeSummary, setRouteSummary] = useState(null);
+      const [isBuildingRoute, setIsBuildingRoute] = useState(false);
+      const [mapStatusText, setMapStatusText] = useState('Loading Venice research data...');
+
+      const [searchQuery, setSearchQuery] = useState('');
+      const [sestiereFilter, setSestiereFilter] = useState('All');
+      const [showFountains, setShowFountains] = useState(true);
+      const [showSubmergedProtected, setShowSubmergedProtected] = useState(true);
+      const [selectedSite, setSelectedSite] = useState(null);
+      const [showGoogleEmbedModal, setShowGoogleEmbedModal] = useState(false);
+      const [highContrast, setHighContrast] = useState(false);
+
+      const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+      const [audioProgress, setAudioProgress] = useState(0);
+      const [userGpsPos, setUserGpsPos] = useState({ lat: 45.4352, lng: 12.3352, label: "Campo San Luca (Virtual Walker)" });
+      const [isTrackingLocation, setIsTrackingLocation] = useState(false);
+      const [scanRadiusMeters, setScanRadiusMeters] = useState(380);
+      const [wanderStepIndex, setWanderStepIndex] = useState(0);
+      const [proximityAlert, setProximityAlert] = useState(null);
+
+      const mapContainerRef = useRef(null);
+      const leafletMapRef = useRef(null);
+      const leafletLayerGroupRef = useRef(null);
+      const leafletTileLayerRef = useRef(null);
+      const gpsWatchIdRef = useRef(null);
+      const routeRequestIdRef = useRef(0);
+
+      const allAvailableTags = ["Bubonic Plague", "Guilds & Glass", "Maritime/Lagoon", "Adaptive Reuse", "Politics & Republic", "Napoleonic & Industrial", "Early Settlement", "Religious", "Everyday Life"];
+
+      useEffect(() => {
+        let cancelled = false;
+        Promise.all([
+          fetch('/api/sites').then(async (response) => {
+            if (!response.ok) throw new Error(`Landmark data request failed (${response.status}).`);
+            return response.json();
+          }),
+          fetch('/api/fountains').then(async (response) => {
+            if (!response.ok) throw new Error(`Fountain data request failed (${response.status}).`);
+            return response.json();
+          })
+        ]).then(([sites, fountains]) => {
+          if (!Array.isArray(sites) || !Array.isArray(fountains) || sites.length === 0) {
+            throw new Error("The server returned an invalid or empty Venice dataset.");
+          }
+          if (cancelled) return;
+          VENICE_SITES = sites;
+          DRINKING_FOUNTAINS = fountains;
+          setSelectedSite(sites[0]);
+          setMapStatusText(`${sites.length} landmarks & ${fountains.length} fountains`);
+          setDataReady(true);
+          setDataLoadError('');
+        }).catch((error) => {
+          if (cancelled) return;
+          setDataLoadError(error.message || "Could not load Venice research data.");
+        });
+        return () => { cancelled = true; };
+      }, [dataLoadAttempt]);
+
+      const activeRouteSites = useMemo(() => activeRouteIds.map((id) => VENICE_SITES.find((s) => s.id === id)).filter(Boolean), [activeRouteIds]);
+
+      const routeStats = useMemo(() => {
+        return {
+          distanceKm: routeSummary ? routeSummary.distanceKm.toFixed(2) : '—',
+          walkMins: routeSummary ? routeSummary.durationMinutes : '—',
+          stepFreeCount: activeRouteSites.filter((site) => site.accessibleStepFree).length
+        };
+      }, [activeRouteSites, routeSummary]);
+
+      const nearbyFeatures = useMemo(() => {
+        const sites = VENICE_SITES
+          .filter((site) => site.type !== 'submerged' && !activeRouteIds.includes(site.id) && site.genre.some((genre) => selectedTags.includes(genre)))
+          .map((site) => ({ ...site, distanceMeters: getDistanceMeters(userGpsPos.lat, userGpsPos.lng, site.lat, site.lng) }))
+          .filter((site) => site.distanceMeters <= scanRadiusMeters)
+          .sort((a, b) => a.distanceMeters - b.distanceMeters);
+        const fountains = DRINKING_FOUNTAINS.map((f) => ({ ...f, distanceMeters: getDistanceMeters(userGpsPos.lat, userGpsPos.lng, f.lat, f.lng) })).filter((f) => f.distanceMeters <= scanRadiusMeters).sort((a, b) => a.distanceMeters - b.distanceMeters);
+        return { sites, fountains };
+      }, [userGpsPos, scanRadiusMeters, activeRouteIds, selectedTags]);
+      const closestPreferredArtifact = nearbyFeatures.sites.find((site) => site.distanceMeters <= 100);
+
+      const googleMapsRouteUrl = useMemo(() => {
+        if (activeRouteSites.length === 0) return 'https://www.google.com/maps/place/Venice,+Italy';
+        const origin = `${activeRouteSites[0].lat},${activeRouteSites[0].lng}`;
+        const dest = `${activeRouteSites[activeRouteSites.length - 1].lat},${activeRouteSites[activeRouteSites.length - 1].lng}`;
+        const wps = activeRouteSites.slice(1, -1).map((s) => `${s.lat},${s.lng}`).join('|');
+        return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(dest)}${wps ? `&waypoints=${encodeURIComponent(wps)}` : ''}&travelmode=walking`;
+      }, [activeRouteSites]);
+
+      // Initialize Leaflet with public basemap providers.
+      useEffect(() => {
+        if (!mapContainerRef.current || !window.L || !dataReady) return;
+        const L = window.L;
+        if (!leafletMapRef.current) {
+          const map = L.map(mapContainerRef.current, { center: [45.4355, 12.3335], zoom: 14, zoomControl: false });
+          L.control.zoom({ position: 'bottomright' }).addTo(map);
+          leafletMapRef.current = map;
+          leafletLayerGroupRef.current = L.layerGroup().addTo(map);
+        }
+        if (leafletTileLayerRef.current) leafletMapRef.current.removeLayer(leafletTileLayerRef.current);
+
+        let tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+        let attribution = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+        if (googleMapTileStyle === 'satellite') {
+          tileUrl = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+          attribution = 'Tiles &copy; Esri';
+        }
+        if (googleMapTileStyle === 'vintage') {
+          tileUrl = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
+          attribution = '&copy; OpenStreetMap contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
+        }
+
+        leafletTileLayerRef.current = L.tileLayer(tileUrl, { maxZoom: 19, attribution }).addTo(leafletMapRef.current);
+        setTimeout(() => leafletMapRef.current?.invalidateSize(), 150);
+      }, [googleMapTileStyle, dataReady]);
+
+      // Render Map Layers
+      useEffect(() => {
+        if (!leafletMapRef.current || !leafletLayerGroupRef.current || !window.L || !dataReady) return;
+        const L = window.L;
+        const group = leafletLayerGroupRef.current;
+        group.clearLayers();
+
+        routeLegs.forEach((leg) => {
+          const points = leg.geometry;
+          L.polyline(points, { color: '#D4AF37', weight: 8, opacity: 0.45 }).addTo(group);
+          L.polyline(points, { color: '#B84A39', weight: 4, opacity: 0.95 }).addTo(group);
+        });
+
+        if (showSubmergedProtected) {
+          VENICE_SITES.filter((s) => s.type === 'submerged').forEach((zone) => {
+            const c = L.circle([zone.lat, zone.lng], { radius: 300, color: '#F59E0B', weight: 2, dashArray: '6, 6', fillColor: '#F59E0B', fillOpacity: 0.25 }).addTo(group);
+            c.bindTooltip(`<strong>🔒 ${zone.name}</strong><br/>300m Anti-Looting Buffer`);
+            c.on('click', () => setSelectedSite(zone));
+          });
+        }
+
+        if (showFountains) {
+          DRINKING_FOUNTAINS.forEach((f) => {
+            const icon = L.divIcon({
+              className: '',
+              html: `<div style="width:22px;height:22px;border-radius:50%;background:#0284C7;border:2px solid #FFF;display:flex;align-items:center;justify-content:center;color:white;font-size:11px;box-shadow:0 2px 5px rgba(0,0,0,0.4);">💧</div>`,
+              iconSize: [22, 22], iconAnchor: [11, 11]
+            });
+            L.marker([f.lat, f.lng], { icon }).addTo(group).bindPopup(`<strong>${f.name}</strong><br/>${f.status}<br/><small>${f.veraNote}</small>`);
+          });
+        }
+
+        if (activeMode === 'street-wander') {
+          L.circle([userGpsPos.lat, userGpsPos.lng], { radius: scanRadiusMeters, color: '#10B981', weight: 1.5, fillColor: '#10B981', fillOpacity: 0.12 }).addTo(group);
+          const uIcon = L.divIcon({
+            className: '',
+            html: `<div style="width:30px;height:30px;border-radius:50%;background:#10B981;border:3px solid #FFF;display:flex;align-items:center;justify-content:center;font-size:15px;box-shadow:0 0 12px rgba(16,185,129,0.9);cursor:grab;">🚶</div>`,
+            iconSize: [30, 30], iconAnchor: [15, 15]
+          });
+          const um = L.marker([userGpsPos.lat, userGpsPos.lng], { icon: uIcon, draggable: true }).addTo(group);
+          um.bindTooltip("Drag me anywhere in Venice!");
+          um.on('dragend', (e) => {
+            const p = e.target.getLatLng();
+            setUserGpsPos({ lat: Number(p.lat.toFixed(5)), lng: Number(p.lng.toFixed(5)), label: "Custom Dropped Pin" });
+          });
+        }
+
+        VENICE_SITES.filter((s) => s.type !== 'submerged').forEach((site) => {
+          const isSel = selectedSite?.id === site.id;
+          const rIdx = activeRouteIds.indexOf(site.id);
+          const isPreferredArtifact = rIdx === -1
+            && site.genre.some((genre) => selectedTags.includes(genre))
+            && getDistanceMeters(userGpsPos.lat, userGpsPos.lng, site.lat, site.lng) <= scanRadiusMeters;
+          const bg = isSel ? '#D4AF37' : rIdx !== -1 ? '#B84A39' : isPreferredArtifact ? '#0284C7' : site.type === 'minor' ? '#0F2C36' : '#334155';
+          const fg = isSel ? '#0F2C36' : '#FFFFFF';
+          const label = rIdx !== -1 ? rIdx + 1 : isPreferredArtifact ? '✧' : site.type === 'minor' ? '✦' : '🏛';
+          const sIcon = L.divIcon({
+            className: '',
+            html: `<div style="width:${isSel ? 34 : 28}px;height:${isSel ? 34 : 28}px;border-radius:50%;background:${bg};color:${fg};border:2.5px solid #F9F6F0;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;box-shadow:0 3px 10px rgba(0,0,0,0.45);">${label}</div>`,
+            iconSize: [30, 30], iconAnchor: [15, 15]
+          });
+          const m = L.marker([site.lat, site.lng], { icon: sIcon }).addTo(group);
+          m.bindTooltip(`<strong>${site.name}</strong> (${site.sestiere})`);
+          m.on('click', () => setSelectedSite(site));
+        });
+      }, [activeRouteSites, routeLegs, activeRouteIds, selectedSite, showFountains, showSubmergedProtected, activeMode, userGpsPos, scanRadiusMeters, selectedTags, dataReady]);
+
+      useEffect(() => {
+        if (leafletMapRef.current && selectedSite) {
+          leafletMapRef.current.panTo([selectedSite.lat, selectedSite.lng], { animate: true });
+        }
+      }, [selectedSite]);
+
+      useEffect(() => {
+        if (!leafletMapRef.current || !window.L || routeLegs.length === 0) return;
+        const bounds = window.L.latLngBounds(routeLegs.flatMap((leg) => leg.geometry));
+        if (bounds.isValid()) {
+          leafletMapRef.current.fitBounds(bounds, { padding: [36, 36], maxZoom: 15 });
+        }
+      }, [routeLegs]);
+
+      // Web Speech API Audio Narrator
+      const stopAudioSpeech = () => {
+        if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+        setIsPlayingAudio(false);
+        setAudioProgress(0);
+      };
+
+      const handleToggleAudioSpeech = () => {
+        if (!selectedSite) return;
+        if (isPlayingAudio) { stopAudioSpeech(); return; }
+        const text = `${selectedSite.name}, in ${selectedSite.sestiere}. Constructed in ${selectedSite.dateConstructed}. ${selectedSite.narrativeScript} Historical context: ${selectedSite.historicalContext} Fun fact: ${selectedSite.funFactlet} Tassini note: ${selectedSite.tassiniNote}`;
+        if ('speechSynthesis' in window) {
+          window.speechSynthesis.cancel();
+          const u = new SpeechSynthesisUtterance(text);
+          u.lang = 'en-US';
+          u.onboundary = (e) => { if (e.charIndex) setAudioProgress(Math.min(100, Math.round((e.charIndex / text.length) * 100))); };
+          u.onend = () => { setIsPlayingAudio(false); setAudioProgress(100); };
+          setIsPlayingAudio(true);
+          setAudioProgress(10);
+          window.speechSynthesis.speak(u);
+        } else {
+          setMapStatusText("Text-to-speech is not supported in this browser.");
+        }
+      };
+
+      useEffect(() => { stopAudioSpeech(); }, [selectedSite]);
+
+      const requestWalkingRoute = async (stopIds) => {
+        const requestId = ++routeRequestIdRef.current;
+        setIsBuildingRoute(true);
+        setRouteLegs([]);
+        setRouteSummary(null);
+        setActiveRouteIds([]);
+        setMapStatusText("Finding connected walking paths...");
+        try {
+          const response = await fetch('/api/routes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ stopIds, accessibleOnly })
+          });
+          const result = await response.json();
+          if (requestId !== routeRequestIdRef.current) return;
+          if (!response.ok) throw new Error(result.error || `Route request failed (${response.status}).`);
+          if (!Array.isArray(result.route) || result.route.length !== stopIds.length
+            || !Array.isArray(result.legs) || result.legs.length !== stopIds.length - 1) {
+            throw new Error("The routing service returned an incomplete walking route.");
+          }
+          const routeSites = result.route.map((id) => VENICE_SITES.find((site) => site.id === id));
+          if (routeSites.some((site) => !site)) throw new Error("The server returned a route with an unknown landmark.");
+          if (result.route.some((id, index) => id !== stopIds[index])) {
+            throw new Error("The routing service changed your selected stop order.");
+          }
+          if (result.legs.some((leg) => !Array.isArray(leg.geometry) || leg.geometry.length < 2
+            || leg.geometry.some((point) => !Array.isArray(point) || point.length !== 2
+              || !point.every((coordinate) => Number.isFinite(coordinate)))
+            || !Number.isFinite(Number(leg.distanceKm)) || !Number.isFinite(Number(leg.durationMinutes))
+            || !Array.isArray(leg.instructions))) {
+            throw new Error("The routing service returned an incomplete walking path.");
+          }
+          const distanceKm = Number(result.distanceKm);
+          const durationMinutes = Number(result.durationMinutes);
+          if (!Number.isFinite(distanceKm) || !Number.isFinite(durationMinutes)) {
+            throw new Error("The routing service returned invalid route details.");
+          }
+          setActiveRouteIds(result.route);
+          setRouteLegs(result.legs);
+          setRouteSummary({ distanceKm, durationMinutes });
+          setSelectedSite(routeSites[0]);
+          setMapStatusText(`${result.routingProvider}: ${distanceKm.toFixed(2)} km, about ${durationMinutes} min`);
+        } catch (error) {
+          if (requestId === routeRequestIdRef.current) {
+            setMapStatusText(error.message || "Could not build the route. Please try again.");
+          }
+        } finally {
+          if (requestId === routeRequestIdRef.current) setIsBuildingRoute(false);
+        }
+      };
+
+      const handleBuildStoryRoute = () => requestWalkingRoute(selectedStopIds);
+
+      useEffect(() => {
+        if (dataReady) requestWalkingRoute(selectedStopIds);
+      }, [dataReady]);
+
+      const clearActiveRoute = () => {
+        routeRequestIdRef.current += 1;
+        setIsBuildingRoute(false);
+        setActiveRouteIds([]);
+        setRouteLegs([]);
+        setRouteSummary(null);
+      };
+
+      const handleToggleLocationTracking = () => {
+        if (gpsWatchIdRef.current !== null) {
+          navigator.geolocation.clearWatch(gpsWatchIdRef.current);
+          gpsWatchIdRef.current = null;
+          setIsTrackingLocation(false);
+          setMapStatusText("Live location stopped");
+          return;
+        }
+        if (!navigator.geolocation) {
+          setMapStatusText("Location is unavailable in this browser; drag the map pin instead.");
+          return;
+        }
+        gpsWatchIdRef.current = navigator.geolocation.watchPosition(
+          ({ coords }) => {
+            setUserGpsPos({ lat: coords.latitude, lng: coords.longitude, label: "Your location" });
+            setMapStatusText("Live location active — showing preferred nearby artifacts");
+          },
+          (error) => {
+            const message = error.code === error.PERMISSION_DENIED
+              ? "Location permission was denied; drag the map pin instead."
+              : error.code === error.TIMEOUT
+                ? "Location timed out; try again or drag the map pin."
+                : "Could not track your location; check device location settings.";
+            if (gpsWatchIdRef.current !== null) navigator.geolocation.clearWatch(gpsWatchIdRef.current);
+            gpsWatchIdRef.current = null;
+            setIsTrackingLocation(false);
+            setMapStatusText(message);
+          }, {
+            enableHighAccuracy: true,
+            maximumAge: 5000,
+            timeout: 15000
+          }
+        );
+        setIsTrackingLocation(true);
+      };
+
+      useEffect(() => () => {
+        if (gpsWatchIdRef.current !== null && navigator.geolocation) {
+          navigator.geolocation.clearWatch(gpsWatchIdRef.current);
+        }
+      }, []);
+
+      const handleSimulateWalkingStep = () => {
+        const steps = [
+          { siteId: 'calle-dei-fuseri', lat: 45.4356, lng: 12.3355, label: "Calle dei Fuseri", distance: '18m ahead', alertTitle: "Passing Tassini Street Origin & 1440 Guild Plaque!", alertBody: "Entering Calle dei Fuseri. Fontanella Campo San Luca is 42m away." },
+          { siteId: 'rialto-bridge', lat: 45.4379, lng: 12.3358, label: "Rialto Bridge Approach", distance: '22m ahead', alertTitle: "Approaching Rialto Bridge (Antonio da Ponte, 1591)", alertBody: "Supported by 12,000 elm pilings driven into the Grand Canal's alluvial bank." },
+          { siteId: 'ca-rezzonico', lat: 45.4334, lng: 12.3263, label: "Campo San Barnaba", distance: '15m on left', alertTitle: "Proximity Trigger: Ca' Rezzonico & 1575 Plague Altar", alertBody: "Longhena's Baroque palace (Cole Porter's 1920s nightclub) and the 1576 altar are within 60m!" },
+          { siteId: 'peggy-guggenheim', lat: 45.4308, lng: 12.3318, label: "Dorsoduro Museum Mile", distance: '25m ahead', alertTitle: "Approaching Palazzo Venier dei Leoni (Peggy Guggenheim)", alertBody: "Known as the 'Palazzo Non Finito' because only its ground floor was built in 1749." }
+        ];
+        const next = wanderStepIndex % steps.length;
+        setWanderStepIndex(next);
+        const step = steps[next];
+        setUserGpsPos({ lat: step.lat, lng: step.lng, label: step.label });
+        setProximityAlert(step);
+        const m = VENICE_SITES.find((s) => s.id === step.siteId);
+        if (m) setSelectedSite(m);
+      };
+
+      const handleExportGeoJSON = async () => {
+        try {
+          const response = await fetch('/api/geojson');
+          if (!response.ok) throw new Error(`GeoJSON export failed (${response.status}).`);
+          const geojson = await response.json();
+          const blob = new Blob([JSON.stringify(geojson, null, 2)], { type: "application/geo+json" });
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = "ancient_venice_sites.geojson";
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        } catch (error) {
+          setMapStatusText(error.message || "Could not export the site dataset.");
+        }
+      };
+
+      const filteredCatalogSites = useMemo(() => {
+        return VENICE_SITES.filter((s) => {
+          const mSest = sestiereFilter === 'All' || s.sestiere.includes(sestiereFilter);
+          const query = searchQuery.trim().toLowerCase();
+          const searchableText = [s.name, s.italianName, s.sestiere, s.category, s.era, s.narrativeScript, s.historicalContext, s.contributionToHistory, s.funFactlet, s.tassiniNote].join(' ').toLowerCase();
+          const mQ = searchableText.includes(query);
+          return mSest && mQ;
+        });
+      }, [searchQuery, sestiereFilter]);
+
+      if (dataLoadError) {
+        return (
+          <main className="min-h-screen flex flex-col items-center justify-center gap-4 p-6 text-center">
+            <h1 className="text-xl font-bold">Could not load the Venice guide</h1>
+            <p role="alert">{dataLoadError}</p>
+            <p>Start the Python server with <code>python server.py</code>, then open <code>http://127.0.0.1:8000</code>.</p>
+            <button onClick={() => setDataLoadAttempt((attempt) => attempt + 1)} className="rounded-lg bg-[#0F2C36] px-4 py-2 font-semibold text-white">Try again</button>
+          </main>
+        );
+      }
+      if (!dataReady) {
+        return <main className="min-h-screen flex items-center justify-center p-6"><p role="status">Loading Venice research data...</p></main>;
+      }
+
+      return (
+        <div className={`h-screen w-full flex flex-col overflow-hidden ${highContrast ? 'bg-slate-950 text-white' : 'bg-[#F9F6F0] text-[#1A252C]'}`}>
+          {/* TOP HEADER */}
+          <header className={`z-30 border-b px-3 py-2 flex flex-wrap items-center justify-between gap-2 ${highContrast ? 'bg-slate-900 border-amber-400' : 'bg-[#0F2C36] border-[#1E4654] text-[#F9F6F0] shadow-md'}`}>
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-[#B84A39] flex items-center justify-center font-bold shadow border border-[#D4AF37]/40">🧭</div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h1 className="font-bold text-base tracking-tight" style={{ fontFamily: "'Georgia', serif" }}>Ancient Venice</h1>
+                  <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full bg-[#D4AF37]/20 text-[#D4AF37] border border-[#D4AF37]/40">Venice field guide</span>
+                </div>
+                <p className="text-[10px] text-slate-300 hidden sm:block">WPI Venice Project Center • Historical & Archaeological Navigator</p>
+              </div>
+            </div>
+
+            {/* MODE TABS */}
+            <nav className="flex items-center bg-[#091D24] p-1 rounded-xl border border-slate-700/70 gap-1 overflow-x-auto">
+              {[
+                { id: 'route-builder', label: '🗺️ Route Builder' },
+                { id: 'street-wander', label: '📡 Near Me (GPS)' },
+                { id: 'historical-map', label: '🏺 Historical Map (soon)' },
+                { id: 'research-hub', label: '📚 WPI Research' }
+              ].map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setActiveMode(t.id)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap ${activeMode === t.id ? 'bg-[#B84A39] text-white' : 'text-slate-300 hover:text-white'}`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </nav>
+
+            {/* ROUTE AND ACCESSIBILITY ACTIONS */}
+            <div className="flex items-center gap-1.5">
+              <a
+                href={googleMapsRouteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-400/40"
+              >
+                ↗ Google Maps
+              </a>
+              <button
+                onClick={() => setHighContrast(!highContrast)}
+                className={`px-2 py-1.5 rounded-lg border text-xs font-semibold ${highContrast ? 'bg-amber-400 text-slate-950' : 'bg-slate-800 text-slate-200 border-slate-600'}`}
+              >
+                AA+
+              </button>
+            </div>
+          </header>
+
+          {/* MAIN WORKSPACE */}
+          <div className="flex-1 flex flex-col lg:flex-row relative overflow-hidden">
+            
+            {/* LEFT SIDEBAR */}
+            <aside className={`z-20 w-full lg:w-[350px] flex-shrink-0 border-r flex flex-col overflow-y-auto p-3.5 space-y-3.5 max-h-[38vh] lg:max-h-none ${highContrast ? 'bg-slate-900 border-amber-400/50' : 'bg-[#F9F6F0] border-[#E2D9C8]'}`}>
+              
+              {activeMode === 'route-builder' && (
+                <>
+                  <div className="p-3 rounded-xl bg-[#0F2C36] text-white border border-[#D4AF37]/30">
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="text-[11px] uppercase font-bold text-[#D4AF37]">Choose Your Walking Stops</span>
+                      <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded">{routeStats.distanceKm} km • ~{routeStats.walkMins}m</span>
+                    </div>
+                    <p className="text-xs text-slate-200">Pick the 4–5 landmarks you want to visit. Only the landmarks you choose become route stops.</p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between items-center">
+                      <h3 className="text-xs font-bold uppercase">Available Landmarks</h3>
+                      <span className={`text-[10px] font-bold ${selectedStopIds.length >= 4 && selectedStopIds.length <= 5 ? 'text-emerald-700' : 'text-[#B84A39]'}`}>{selectedStopIds.length} / 4–5 selected</span>
+                    </div>
+                    {VENICE_SITES.filter((site) => site.type !== 'submerged').map((site) => {
+                      const isSelected = selectedStopIds.includes(site.id);
+                      const isUnavailable = accessibleOnly && !site.accessibleStepFree && !isSelected;
+                      const cannotAddMore = !isSelected && selectedStopIds.length >= 5;
+                      return (
+                        <label key={site.id} className={`flex items-start gap-2 p-2 rounded-lg border text-xs ${isSelected ? 'border-[#B84A39] bg-[#B84A39]/5' : 'border-[#E2D9C8] bg-white'} ${isUnavailable || cannotAddMore ? 'opacity-50' : 'cursor-pointer'}`}>
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            disabled={isUnavailable || cannotAddMore}
+                            onChange={() => {
+                              setSelectedStopIds((current) => isSelected ? current.filter((id) => id !== site.id) : [...current, site.id]);
+                              clearActiveRoute();
+                              setMapStatusText("Stops changed. Build a route to see walkable paths.");
+                            }}
+                            className="mt-0.5 accent-[#B84A39]"
+                          />
+                          <span className="min-w-0">
+                            <span className="block font-semibold">{site.name}</span>
+                            <span className="text-[10px] opacity-70">{site.sestiere}{site.accessibleStepFree ? ' • Step-free' : ' • Steps'}</span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  <label className="flex items-center justify-between p-2 rounded-xl border border-sky-500/30 bg-sky-500/10 cursor-pointer text-xs font-semibold">
+                    <span>♿ Step-Free / Accessible Stops (2018 IQP)</span>
+                    <input
+                      type="checkbox"
+                      checked={accessibleOnly}
+                      onChange={(e) => {
+                        const enabled = e.target.checked;
+                        setAccessibleOnly(enabled);
+                        clearActiveRoute();
+                        setMapStatusText("Accessibility filter changed. Build a route to see walkable paths.");
+                        if (enabled) {
+                          setSelectedStopIds((current) => current.filter((id) => VENICE_SITES.find((site) => site.id === id)?.accessibleStepFree));
+                        }
+                      }}
+                      className="accent-[#B84A39]"
+                    />
+                  </label>
+
+                  <div>
+                    <h3 className="text-[10px] font-bold uppercase opacity-75 mb-1">Walking Preferences — Nearby Finds</h3>
+                    <p className="text-[10px] opacity-75 mb-2">These interests do not add route stops. While you walk, matching artifacts outside your chosen route appear when they are nearby.</p>
+                  <div className="flex flex-wrap gap-1">
+                    {allAvailableTags.map((tag) => {
+                      const active = selectedTags.includes(tag);
+                      return (
+                        <button
+                          key={tag}
+                          onClick={() => setSelectedTags((prev) => prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag])}
+                          className={`px-2 py-0.5 rounded-full text-[11px] font-medium border ${active ? 'bg-[#B84A39] text-white border-[#B84A39]' : 'bg-white text-slate-700 border-[#D5CBB8]'}`}
+                        >
+                          {active ? '✓ ' : '+ '}{tag}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  </div>
+
+                  <button disabled={isBuildingRoute || selectedStopIds.length < 4 || selectedStopIds.length > 5} onClick={handleBuildStoryRoute} className="w-full py-2 px-3 rounded-xl bg-[#0F2C36] hover:bg-[#194554] disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-xs shadow border border-[#D4AF37]/40">
+                    {isBuildingRoute ? 'Finding walkable paths...' : 'Build Route from My Selected Stops'}
+                  </button>
+
+                  <div className="pt-2 border-t border-[#E2D9C8] space-y-1.5">
+                    <h3 className="text-xs font-bold uppercase text-[#B84A39]">Active Pathway ({activeRouteSites.length} Stops)</h3>
+                    {activeRouteSites.map((site, idx) => (
+                      <div
+                        key={site.id}
+                        onClick={() => setSelectedSite(site)}
+                        className={`p-2 rounded-xl border cursor-pointer flex items-center gap-2 ${selectedSite?.id === site.id ? 'bg-[#0F2C36]/10 border-[#0F2C36]' : 'bg-white border-[#E2D9C8]'}`}
+                      >
+                        <div className="w-5 h-5 rounded-full bg-[#B84A39] text-white flex items-center justify-center text-[11px] font-bold flex-shrink-0">{idx + 1}</div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-bold truncate">{site.name}</p>
+                          <p className="text-[10px] opacity-75">{site.sestiere} • {site.era}</p>
+                        </div>
+                      </div>
+                    ))}
+                    {routeLegs.map((leg) => {
+                      const destination = VENICE_SITES.find((site) => site.id === leg.toId);
+                      return (
+                        <details key={`${leg.fromId}-${leg.toId}`} className="ml-7 p-2 rounded-lg bg-white border border-[#E2D9C8] text-xs">
+                          <summary className="cursor-pointer font-semibold">
+                            Walk to {destination?.name || 'next stop'} • {Number(leg.distanceKm).toFixed(2)} km • {leg.durationMinutes} min
+                          </summary>
+                          {leg.instructions.length > 0 ? (
+                            <ol className="mt-2 ml-4 list-decimal space-y-1 text-[11px]">
+                              {leg.instructions.map((instruction, index) => <li key={index}>{instruction}</li>)}
+                            </ol>
+                          ) : (
+                            <p className="mt-2 text-[11px]">Follow the highlighted pedestrian path on the map.</p>
+                          )}
+                        </details>
+                      );
+                    })}
+                  </div>
+
+                  <div className="pt-2 border-t border-[#E2D9C8] space-y-1">
+                    <h3 className="text-[10px] font-bold uppercase opacity-75">Preset Curated Routes:</h3>
+                    {PRESET_ROUTES.map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => { setSelectedStopIds(p.stops); setSelectedTags(p.tags); requestWalkingRoute(p.stops); }}
+                        className="w-full text-left p-2 rounded-lg border border-[#D5CBB8] bg-[#F3EDE0] hover:bg-[#EAE0CC] text-xs flex justify-between items-center"
+                      >
+                        <div><div className="font-bold">{p.title}</div><div className="text-[10px] opacity-75">{p.stops.length} selected stops • {p.duration}</div></div>
+                        <span>→</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {activeMode === 'street-wander' && (
+                <div className="space-y-3">
+                  <div className="p-3 rounded-xl bg-[#0F2C36] text-white border border-[#D4AF37]/40">
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="text-xs font-bold text-[#D4AF37]">📡 "What's Near Me" GPS Radar</span>
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">{nearbyFeatures.sites.length} matches</span>
+                    </div>
+                    <button onClick={handleToggleLocationTracking} className={`w-full mt-2 py-1.5 rounded-lg ${isTrackingLocation ? 'bg-[#B84A39] hover:bg-red-700' : 'bg-emerald-700 hover:bg-emerald-600'} text-white text-xs font-bold`}>{isTrackingLocation ? 'Stop live location' : 'Start live location'}</button>
+                    <p className="text-xs text-slate-200 mt-2 mb-2">Live GPS updates preferred artifacts as you walk. The nearby list excludes your selected route stops.</p>
+                    <button onClick={handleSimulateWalkingStep} className="w-full py-2 px-3 rounded-lg bg-[#B84A39] text-white font-bold text-xs">
+                      🚶 Simulate Walking 100m in Venice
+                    </button>
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-white border border-[#D5CBB8] text-slate-900">
+                    <div className="flex justify-between text-xs font-bold">
+                      <span>Scan Radius:</span><span className="text-[#B84A39]">{scanRadiusMeters}m</span>
+                    </div>
+                    <input type="range" min={100} max={800} step={50} value={scanRadiusMeters} onChange={(e) => setScanRadiusMeters(Number(e.target.value))} className="w-full accent-[#B84A39]" />
+                  </div>
+
+                  {closestPreferredArtifact && (
+                    <div role="status" className="p-2.5 rounded-xl bg-amber-500/15 border-2 border-[#D4AF37]">
+                      <span className="text-[10px] font-bold uppercase text-[#B84A39]">Nearby preference match • {closestPreferredArtifact.distanceMeters}m</span>
+                      <h4 className="font-bold text-xs mt-1">{closestPreferredArtifact.name}</h4>
+                      <p className="text-xs opacity-90">This nearby landmark matches your walking preferences and is not one of your selected route stops.</p>
+                    </div>
+                  )}
+
+                  {proximityAlert && (
+                    <div className="p-2.5 rounded-xl bg-amber-500/15 border-2 border-[#D4AF37]">
+                      <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-[#B84A39] text-white">GPS Trigger • {proximityAlert.distance}</span>
+                      <h4 className="font-bold text-xs mt-1">{proximityAlert.alertTitle}</h4>
+                      <p className="text-xs opacity-90">{proximityAlert.alertBody}</p>
+                    </div>
+                  )}
+
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-bold uppercase">Preferred Artifacts Within {scanRadiusMeters}m</h4>
+                    {nearbyFeatures.sites.map((s) => (
+                      <div key={s.id} onClick={() => setSelectedSite(s)} className="p-2 rounded-lg bg-white text-slate-900 border border-[#E2D9C8] cursor-pointer flex justify-between items-center text-xs">
+                        <span className="font-bold truncate pr-2">{s.name}</span>
+                        <span className="px-2 py-0.5 rounded bg-[#0F2C36] text-[#D4AF37] font-bold text-[10px]">{s.distanceMeters}m</span>
+                      </div>
+                    ))}
+                    {nearbyFeatures.sites.length === 0 && (
+                      <p className="p-2 rounded-lg bg-white text-slate-600 border border-[#E2D9C8] text-xs">No preferred artifacts are nearby. Increase the scan radius or update your walking preferences in Route Builder.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {activeMode === 'historical-map' && (
+                <div className="space-y-3">
+                  <div className="p-3 rounded-xl border border-[#D4AF37]/50 bg-white text-slate-900">
+                    <span className="text-xs font-bold uppercase text-[#B84A39]">Historical Map Layers — Coming Soon</span>
+                    <p className="mt-2 text-xs">The old year slider showed a placeholder drawing, not historical map data, so it has been removed.</p>
+                    <p className="mt-2 text-xs">This map stays on the present-day street basemap. When your historical database is ready, it can be connected here to show real dated layers.</p>
+                  </div>
+                </div>
+              )}
+
+              {activeMode === 'research-hub' && (
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-bold uppercase text-[#B84A39]">WPI Research Catalog</span>
+                    <button onClick={handleExportGeoJSON} className="px-2 py-1 rounded bg-[#0F2C36] text-[#D4AF37] text-[10px] font-bold">⬇ Export GeoJSON</button>
+                  </div>
+                  <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search Ca' Rezzonico, Longhena..." className="w-full px-2.5 py-1.5 rounded-lg border border-[#D5CBB8] bg-white text-slate-900 text-xs" />
+                  <select value={sestiereFilter} onChange={(e) => setSestiereFilter(e.target.value)} aria-label="Filter by district" className="w-full px-2.5 py-1.5 rounded-lg border border-[#D5CBB8] bg-white text-slate-900 text-xs">
+                    <option value="All">All districts</option>
+                    {[...new Set(VENICE_SITES.map((site) => site.sestiere))].sort().map((sestiere) => <option key={sestiere} value={sestiere}>{sestiere}</option>)}
+                  </select>
+                  <div className="space-y-1">
+                    {filteredCatalogSites.map((s) => (
+                      <div key={s.id} onClick={() => setSelectedSite(s)} className="p-2 rounded-lg bg-white text-slate-900 border border-[#E2D9C8] cursor-pointer flex justify-between items-center text-xs">
+                        <span className="font-bold truncate pr-2">{s.name}</span>
+                        <span className="text-[10px] opacity-70">{s.sestiere}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </aside>
+
+            {/* CENTER INTERACTIVE MAP */}
+            <main className="flex-1 relative bg-[#0B222B] overflow-hidden flex flex-col justify-between min-h-[320px]">
+              {/* Top Floating Map Style Switcher */}
+              <div className="z-20 m-2.5 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
+                <div className="pointer-events-auto bg-[#0F2C36]/95 text-[#F9F6F0] px-3 py-1 rounded-xl border border-[#D4AF37]/40 shadow text-xs flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  <span>{mapStatusText}</span>
+                </div>
+                <div className="pointer-events-auto flex items-center gap-1 bg-[#0F2C36]/95 p-1 rounded-xl border border-slate-700 shadow text-xs">
+                  <button onClick={() => setGoogleMapTileStyle('roadmap')} className={`px-2 py-1 rounded-lg font-semibold ${googleMapTileStyle === 'roadmap' ? 'bg-[#B84A39] text-white' : 'text-slate-300'}`}>Street map</button>
+                  <button onClick={() => setGoogleMapTileStyle('satellite')} className={`px-2 py-1 rounded-lg font-semibold ${googleMapTileStyle === 'satellite' ? 'bg-[#B84A39] text-white' : 'text-slate-300'}`}>Satellite</button>
+                </div>
+              </div>
+
+              <div ref={mapContainerRef} className="absolute inset-0 w-full h-full" />
+
+              {/* Bottom Map Legend */}
+              <div className="z-20 m-2.5 pointer-events-none flex justify-between items-center">
+                <div className="pointer-events-auto bg-[#0F2C36]/90 px-3 py-1.5 rounded-xl border border-slate-700 text-[11px] text-slate-200 flex flex-wrap gap-3 shadow">
+                  <span>🔴 Route Stop</span>
+                  <span>🔹 Preferred nearby artifact</span>
+                  <span>✦ Tassini / Altar</span>
+                  <span>🔒 300m Obfuscated Dig</span>
+                  <span>💧 Potable Fountain</span>
+                </div>
+              </div>
+            </main>
+
+            {/* RIGHT RESEARCH & AUDIO STORY DRAWER */}
+            {selectedSite && (
+              <section className={`z-20 w-full lg:w-[390px] flex-shrink-0 border-l flex flex-col overflow-y-auto max-h-[45vh] lg:max-h-none ${highContrast ? 'bg-slate-900 border-amber-400' : 'bg-[#F9F6F0] border-[#E2D9C8] shadow-xl'}`}>
+                <div className="p-3.5 bg-[#0F2C36] text-[#F9F6F0] border-b border-[#D4AF37]/30 sticky top-0 z-10">
+                  <div className="flex flex-wrap items-center justify-between gap-1 mb-1">
+                    <div className="flex gap-1.5">
+                      <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-[#B84A39] text-white">{selectedSite.sestiere}</span>
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-white/10 text-[#D4AF37]">{selectedSite.category}</span>
+                    </div>
+                    <button onClick={() => setShowGoogleEmbedModal(true)} className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white">
+                      🌍 Google Map View
+                    </button>
+                  </div>
+                  <h2 className="text-base font-bold leading-snug" style={{ fontFamily: "'Georgia', serif" }}>{selectedSite.name}</h2>
+                  <p className="text-[11px] text-slate-300 italic">{selectedSite.italianName}</p>
+
+                  {/* Real Web Speech API Audio Player */}
+                  <div className="mt-2.5 p-2 rounded-xl bg-[#091D24] border border-slate-700 flex items-center gap-2.5">
+                    <button onClick={handleToggleAudioSpeech} className="w-8 h-8 rounded-lg bg-[#D4AF37] text-[#0F2C36] font-bold flex items-center justify-center flex-shrink-0">
+                      {isPlayingAudio ? '⏸' : '▶'}
+                    </button>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex justify-between text-[11px] mb-1">
+                        <span className="font-semibold text-[#D4AF37]">{isPlayingAudio ? 'Speaking Audio Tour...' : 'Listen to Story (Real TTS)'}</span>
+                        <span className="text-slate-400">{audioProgress}%</span>
+                      </div>
+                      <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div className="h-full bg-[#D4AF37] transition-all" style={{ width: `${audioProgress}%` }} />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Standardized 8-Point WPI Research Questions Body */}
+                <div className="p-3.5 space-y-3 text-xs leading-relaxed">
+                  <div className="p-3 rounded-xl bg-white text-slate-900 border border-[#E2D9C8]">
+                    <h3 className="text-[10px] font-bold uppercase text-[#B84A39] mb-1">📖 Narrative & Historical Context</h3>
+                    <p>{selectedSite.narrativeScript}</p>
+                    <p className="mt-2 pt-2 border-t text-[11px] text-slate-700"><strong>Historical Context:</strong> {selectedSite.historicalContext}</p>
+                    <p className="mt-1 text-[11px] text-slate-700"><strong>Contribution to Venice History:</strong> {selectedSite.contributionToHistory}</p>
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-amber-500/10 border border-[#D4AF37]/50">
+                    <div className="font-bold text-[#B84A39] uppercase text-[10px] mb-0.5">✨ Fun Factlet</div>
+                    <p>{selectedSite.funFactlet}</p>
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-[#0F2C36]/5 border border-[#0F2C36]/20">
+                    <div className="font-bold text-[#0F2C36] uppercase text-[10px] mb-0.5">🏛️ Giuseppe Tassini Street Note</div>
+                    <p>{selectedSite.tassiniNote}</p>
+                  </div>
+
+                  <div className="rounded-xl border border-[#E2D9C8] overflow-hidden bg-white text-slate-900">
+                    <div className="px-3 py-1.5 bg-[#EFE9DD] font-bold text-[10px] uppercase flex justify-between">
+                      <span>WPI Location Record</span>
+                      <span>{selectedSite.lat}°N, {selectedSite.lng}°E</span>
+                    </div>
+                    <div className="divide-y text-[11px]">
+                      <div className="p-2 flex justify-between gap-3"><span className="font-semibold opacity-75">Constructed:</span><span className="text-right">{selectedSite.dateConstructed}</span></div>
+                      <div className="p-2 flex justify-between gap-3"><span className="font-semibold opacity-75">Renovations:</span><span className="text-right">{selectedSite.renovations}</span></div>
+                      <div className="p-2 flex justify-between gap-3"><span className="font-semibold opacity-75">Status:</span><span className="text-right font-semibold text-emerald-700">{selectedSite.status}</span></div>
+                      <div className="p-2 flex justify-between gap-3"><span className="font-semibold opacity-75">Anti-Looting:</span><span className="text-right">{selectedSite.lootingRisk}</span></div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            )}
+          </div>
+
+          {/* EMBEDDED GOOGLE MAPS MODAL */}
+          {showGoogleEmbedModal && selectedSite && (
+            <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
+              <div className="bg-[#F9F6F0] text-[#1A252C] max-w-2xl w-full rounded-2xl shadow-2xl border border-[#D4AF37] overflow-hidden flex flex-col">
+                <div className="p-3.5 bg-[#0F2C36] text-white flex justify-between items-center">
+                  <div>
+                    <h3 className="font-bold text-sm">Google Maps Live View: {selectedSite.name}</h3>
+                    <p className="text-[11px] text-slate-300">{selectedSite.lat}° N, {selectedSite.lng}° E ({selectedSite.sestiere})</p>
+                  </div>
+                  <button onClick={() => setShowGoogleEmbedModal(false)} className="px-2.5 py-1 rounded bg-white/10 text-white text-xs">✕ Close</button>
+                </div>
+                <div className="w-full h-[380px] bg-slate-200">
+                  <iframe
+                    title="Google Maps View"
+                    width="100%"
+                    height="100%"
+                    style={{ border: 0 }}
+                    loading="lazy"
+                    allowFullScreen
+                    src={`https://maps.google.com/maps?q=${selectedSite.lat},${selectedSite.lng}&z=18&output=embed`}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>

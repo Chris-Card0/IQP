@@ -1,0 +1,37 @@
+body {
+  margin: 0;
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+}
+
+.leaflet-container {
+  z-index: 1;
+  font-family: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgb(0 0 0 / 5%);
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: #b84a39;
+}
+
+button,
+select,
+input {
+  font: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 3px solid #d4af37;
+  outline-offset: 2px;
+}
