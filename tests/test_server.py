@@ -32,13 +32,18 @@ def encode_polyline(points, precision=6):
     return "".join(encoded)
 
 
-def mocked_router_response(has_ferry=False):
+def mocked_router_response(has_ferry=False, travel_type="foot"):
     shape = encode_polyline([(45.4352, 12.3352), (45.4353, 12.3353)])
     legs = [
         {
             "shape": shape,
             "summary": {"length": 0.5, "time": 600, "has_ferry": has_ferry},
-            "maneuvers": [{"instruction": "Continue along the pedestrian path."}],
+            "maneuvers": [
+                {
+                    "instruction": "Continue along the pedestrian path.",
+                    "travel_type": travel_type,
+                }
+            ],
         }
         for _ in range(3)
     ]
@@ -165,11 +170,20 @@ class RouteTests(unittest.TestCase):
 
     def test_rejects_routes_that_require_ferries(self):
         selected = ["st-marks-basilica", "calle-dei-fuseri", "rialto-bridge", "ca-rezzonico"]
-        mock_router_response(mocked_router_response(has_ferry=True))
+        mock_router_response(mocked_router_response(has_ferry=True, travel_type="ferry"))
         self.addCleanup(patch.stopall)
 
         with self.assertRaisesRegex(RuntimeError, "requires a ferry"):
             get_walkable_route(selected)
+
+    def test_allows_walking_routes_with_a_false_ferry_summary(self):
+        selected = ["st-marks-basilica", "calle-dei-fuseri", "rialto-bridge", "ca-rezzonico"]
+        mock_router_response(mocked_router_response(has_ferry=True))
+        self.addCleanup(patch.stopall)
+
+        result = get_walkable_route(selected)
+
+        self.assertEqual(len(result["legs"]), 3)
 
     def test_reports_routing_service_connection_errors(self):
         mock_urlopen = patch("server.urlopen", side_effect=URLError("offline"))
@@ -178,6 +192,17 @@ class RouteTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "Could not reach the pedestrian routing service"):
             get_walkable_route(["st-marks-basilica", "calle-dei-fuseri", "rialto-bridge", "ca-rezzonico"])
+
+    def test_retries_a_transient_routing_service_connection_error(self):
+        selected = ["st-marks-basilica", "calle-dei-fuseri", "rialto-bridge", "ca-rezzonico"]
+        mock_urlopen = mock_router_response(mocked_router_response())
+        mock_urlopen.side_effect = [URLError("temporary outage"), mock_urlopen.return_value]
+        self.addCleanup(patch.stopall)
+
+        result = get_walkable_route(selected)
+
+        self.assertEqual(len(result["legs"]), 3)
+        self.assertEqual(mock_urlopen.call_count, 2)
 
 
 class ServerStartupTests(unittest.TestCase):

@@ -2,6 +2,7 @@ import errno
 import json
 import math
 import os
+import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -95,19 +96,27 @@ def get_walkable_route(stop_ids, accessible_only=False):
         },
         method="POST",
     )
-    try:
-        with urlopen(request, timeout=20) as response:
-            result = json.load(response)
-    except HTTPError as error:
-        raise RuntimeError(
-            f"The pedestrian routing service returned HTTP {error.code}. Please try again."
-        ) from error
-    except (URLError, TimeoutError) as error:
-        raise RuntimeError(
-            "Could not reach the pedestrian routing service. Check your internet connection and try again."
-        ) from error
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise RuntimeError("The pedestrian routing service returned an invalid response.") from error
+    for attempt in range(2):
+        try:
+            with urlopen(request, timeout=20) as response:
+                result = json.load(response)
+            break
+        except HTTPError as error:
+            if attempt == 0 and (error.code == 429 or 500 <= error.code < 600):
+                time.sleep(0.35)
+                continue
+            raise RuntimeError(
+                f"The pedestrian routing service returned HTTP {error.code}. Please try again."
+            ) from error
+        except (URLError, TimeoutError) as error:
+            if attempt == 0:
+                time.sleep(0.35)
+                continue
+            raise RuntimeError(
+                "Could not reach the pedestrian routing service. Check your internet connection and try again."
+            ) from error
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise RuntimeError("The pedestrian routing service returned an invalid response.") from error
 
     if not isinstance(result, dict):
         raise RuntimeError("The pedestrian routing service returned an invalid response.")
@@ -121,22 +130,11 @@ def get_walkable_route(stop_ids, accessible_only=False):
             "Try a different stop or turn off the step-free filter."
         )
     trip_summary = trip.get("summary", {})
-    if isinstance(trip_summary, dict) and trip_summary.get("has_ferry"):
-        raise RuntimeError(
-            "This route requires a ferry and is not a walking-only route. "
-            "Choose stops connected by pedestrian paths."
-        )
-
     route_legs = []
     for index, leg in enumerate(legs):
         if not isinstance(leg, dict):
             raise RuntimeError("The pedestrian router returned an incomplete route.")
         summary = leg.get("summary", {})
-        if isinstance(summary, dict) and summary.get("has_ferry"):
-            raise RuntimeError(
-                "This route requires a ferry and is not a walking-only route. "
-                "Choose stops connected by pedestrian paths."
-            )
         try:
             geometry = decode_polyline(leg["shape"])
             distance_km = float(summary["length"])
@@ -148,6 +146,25 @@ def get_walkable_route(stop_ids, accessible_only=False):
         maneuvers = leg.get("maneuvers", [])
         if not isinstance(maneuvers, list):
             raise RuntimeError("The pedestrian router returned invalid walking directions.")
+        summary_has_ferry = isinstance(summary, dict) and summary.get("has_ferry")
+        travel_types = [
+            maneuver.get("travel_type")
+            for maneuver in maneuvers
+            if isinstance(maneuver, dict)
+        ]
+        has_only_foot_travel_types = bool(maneuvers) and len(travel_types) == len(maneuvers) and all(
+            isinstance(travel_type, str) and travel_type.casefold() == "foot"
+            for travel_type in travel_types
+        )
+        has_ferry_maneuver = any(
+            isinstance(travel_type, str) and travel_type.casefold() == "ferry"
+            for travel_type in travel_types
+        )
+        if has_ferry_maneuver or (summary_has_ferry and not has_only_foot_travel_types):
+            raise RuntimeError(
+                "This route requires a ferry and is not a walking-only route. "
+                "Choose stops connected by pedestrian paths."
+            )
         instructions = [
             maneuver["instruction"]
             for maneuver in maneuvers

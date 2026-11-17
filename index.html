@@ -6,6 +6,9 @@
   <title>Ancient Venice | WPI Historical & Archaeological Navigator</title>
   <meta name="description" content="Explore Venice's historic landmarks, build themed walking routes, and browse WPI research records." />
   <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -18,6 +21,41 @@
 
   <script type="text/babel">
     const { useState, useEffect, useMemo, useRef } = React;
+
+    const ICON_PATHS = {
+      route: ['M3 3v18h18', 'm19 9-5 5-4-4-3 3', 'M19 3h.01'],
+      gps: ['M12 2v2', 'M12 20v2', 'm4.93 4.93 1.42 1.42', 'm17.65 17.65 1.42 1.42', 'M2 12h2', 'M20 12h2', 'm6.35 17.65-1.42 1.42', 'm19.07 4.93-1.42 1.42', 'M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z'],
+      map: ['M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z', 'M9 3v15', 'M15 6v15'],
+      book: ['M4 19.5A2.5 2.5 0 0 1 6.5 17H20', 'M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z'],
+      arrow: ['M7 17 17 7', 'M7 7h10v10'],
+      accessibility: ['M12 2a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z', 'M4 7h16', 'M12 7v5', 'm8 21 4-9 4 9', 'm7 7 2 5h6l2-5'],
+      distance: ['M3 16.5a2.5 2.5 0 1 0 5 0 2.5 2.5 0 0 0-5 0Z', 'M16 7.5a2.5 2.5 0 1 0 5 0 2.5 2.5 0 0 0-5 0Z', 'm8 16 8-7'],
+      clock: ['M12 8v4l3 3', 'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z'],
+      pin: ['M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z', 'M12 10a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z'],
+      panel: ['M3 3h18v18H3z', 'M9 3v18', 'm15 10-2 2 2 2'],
+      panelOpen: ['M3 3h18v18H3z', 'M9 3v18', 'm13 10 2 2-2 2'],
+      download: ['M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4', 'm7 10 5 5 5-5', 'M12 15V3'],
+      search: ['m21 21-4.34-4.34', 'M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16Z']
+    };
+
+    function Icon({ name, size = 16, className = '' }) {
+      return (
+        <svg
+          aria-hidden="true"
+          className={className}
+          width={size}
+          height={size}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          {(ICON_PATHS[name] || []).map((path, index) => <path key={index} d={path} />)}
+        </svg>
+      );
+    }
 
     // Haversine Real-World Distance Calculator (Meters)
     function getDistanceMeters(lat1, lon1, lat2, lon2) {
@@ -44,6 +82,14 @@
       const [dataLoadError, setDataLoadError] = useState('');
       const [dataLoadAttempt, setDataLoadAttempt] = useState(0);
       const [activeMode, setActiveMode] = useState('route-builder');
+      const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+      const [panelSizes, setPanelSizes] = useState({
+        sidebarWidth: 350,
+        researchWidth: 390,
+        sidebarHeight: 320,
+        researchHeight: 380
+      });
+      const [compactLayout, setCompactLayout] = useState(() => window.matchMedia('(max-width: 1023px)').matches);
       const [googleMapTileStyle, setGoogleMapTileStyle] = useState('roadmap');
       const [selectedStopIds, setSelectedStopIds] = useState(['st-marks-basilica', 'calle-dei-fuseri', 'rialto-bridge', 'ca-rezzonico', 'peggy-guggenheim']);
       const [selectedTags, setSelectedTags] = useState(['Adaptive Reuse', 'Bubonic Plague', 'Guilds & Glass']);
@@ -66,7 +112,8 @@
       const [audioProgress, setAudioProgress] = useState(0);
       const [userGpsPos, setUserGpsPos] = useState({ lat: 45.4352, lng: 12.3352, label: "Campo San Luca (Virtual Walker)" });
       const [isTrackingLocation, setIsTrackingLocation] = useState(false);
-      const [scanRadiusMeters, setScanRadiusMeters] = useState(380);
+      const [isDemoLocation, setIsDemoLocation] = useState(true);
+      const [scanRadiusMeters, setScanRadiusMeters] = useState(50);
       const [wanderStepIndex, setWanderStepIndex] = useState(0);
       const [proximityAlert, setProximityAlert] = useState(null);
 
@@ -76,6 +123,69 @@
       const leafletTileLayerRef = useRef(null);
       const gpsWatchIdRef = useRef(null);
       const routeRequestIdRef = useRef(0);
+      const resizeStartRef = useRef(null);
+
+      useEffect(() => {
+        const updateLayout = () => setCompactLayout(window.matchMedia('(max-width: 1023px)').matches);
+        window.addEventListener('resize', updateLayout);
+        return () => window.removeEventListener('resize', updateLayout);
+      }, []);
+
+      const beginPanelResize = (panel, event) => {
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        resizeStartRef.current = {
+          panel,
+          axis: window.matchMedia('(max-width: 1023px)').matches ? 'y' : 'x',
+          x: event.clientX,
+          y: event.clientY,
+          ...panelSizes
+        };
+      };
+
+      const movePanelResize = (event) => {
+        const start = resizeStartRef.current;
+        if (!start) return;
+        const delta = start.axis === 'x' ? event.clientX - start.x : event.clientY - start.y;
+        setPanelSizes((current) => {
+          if (start.panel === 'sidebar') {
+            const size = start.axis === 'x' ? 'sidebarWidth' : 'sidebarHeight';
+            const min = start.axis === 'x' ? 250 : 180;
+            const max = start.axis === 'x' ? Math.min(520, window.innerWidth * 0.48) : Math.min(520, window.innerHeight * 0.7);
+            return { ...current, [size]: Math.round(Math.max(min, Math.min(max, start[size] + delta))) };
+          }
+          const size = start.axis === 'x' ? 'researchWidth' : 'researchHeight';
+          const min = start.axis === 'x' ? 300 : 180;
+          const max = start.axis === 'x' ? Math.min(520, window.innerWidth * 0.48) : Math.min(520, window.innerHeight * 0.7);
+          return { ...current, [size]: Math.round(Math.max(min, Math.min(max, start[size] - delta))) };
+        });
+      };
+
+      const stopPanelResize = () => {
+        resizeStartRef.current = null;
+      };
+
+      const handlePanelResizeKeyDown = (panel, event) => {
+        const horizontal = window.matchMedia('(max-width: 1023px)').matches;
+        const amount = event.shiftKey ? 40 : 16;
+        const key = horizontal
+          ? (event.key === 'ArrowDown' ? 'increase' : event.key === 'ArrowUp' ? 'decrease' : null)
+          : (event.key === 'ArrowRight' ? 'increase' : event.key === 'ArrowLeft' ? 'decrease' : null);
+        if (!key) return;
+        event.preventDefault();
+        const direction = key === 'increase' ? 1 : -1;
+        setPanelSizes((current) => {
+          const size = panel === 'sidebar'
+            ? (horizontal ? 'sidebarHeight' : 'sidebarWidth')
+            : (horizontal ? 'researchHeight' : 'researchWidth');
+          const min = horizontal ? 180 : panel === 'sidebar' ? 250 : 300;
+          const max = horizontal
+            ? Math.min(520, window.innerHeight * 0.7)
+            : Math.min(520, window.innerWidth * 0.48);
+          const panelDirection = panel === 'sidebar' ? direction : -direction;
+          return { ...current, [size]: Math.round(Math.max(min, Math.min(max, current[size] + amount * panelDirection))) };
+        });
+      };
 
       const allAvailableTags = ["Bubonic Plague", "Guilds & Glass", "Maritime/Lagoon", "Adaptive Reuse", "Politics & Republic", "Napoleonic & Industrial", "Early Settlement", "Religious", "Everyday Life"];
 
@@ -110,6 +220,39 @@
 
       const activeRouteSites = useMemo(() => activeRouteIds.map((id) => VENICE_SITES.find((s) => s.id === id)).filter(Boolean), [activeRouteIds]);
 
+      useEffect(() => {
+        const timer = window.setTimeout(() => leafletMapRef.current?.invalidateSize(), 280);
+        return () => window.clearTimeout(timer);
+      }, [sidebarCollapsed]);
+
+      useEffect(() => {
+        const revealItems = document.querySelectorAll('.reveal-on-scroll:not(.is-visible)');
+        if (!('IntersectionObserver' in window)) {
+          revealItems.forEach((item) => item.classList.add('is-visible'));
+          return undefined;
+        }
+        const itemsByRoot = new Map();
+        revealItems.forEach((item) => {
+          const root = item.closest('.workspace-sidebar, .research-drawer');
+          if (!itemsByRoot.has(root)) itemsByRoot.set(root, []);
+          itemsByRoot.get(root).push(item);
+        });
+        const observers = [];
+        itemsByRoot.forEach((items, root) => {
+          const observer = new IntersectionObserver((entries) => {
+            entries.forEach((entry) => {
+              if (entry.isIntersecting) {
+                entry.target.classList.add('is-visible');
+                observer.unobserve(entry.target);
+              }
+            });
+          }, { root, threshold: 0.08 });
+          items.forEach((item) => observer.observe(item));
+          observers.push(observer);
+        });
+        return () => observers.forEach((observer) => observer.disconnect());
+      }, [activeMode, selectedSite, dataReady, sidebarCollapsed]);
+
       const routeStats = useMemo(() => {
         return {
           distanceKm: routeSummary ? routeSummary.distanceKm.toFixed(2) : '—',
@@ -127,7 +270,7 @@
         const fountains = DRINKING_FOUNTAINS.map((f) => ({ ...f, distanceMeters: getDistanceMeters(userGpsPos.lat, userGpsPos.lng, f.lat, f.lng) })).filter((f) => f.distanceMeters <= scanRadiusMeters).sort((a, b) => a.distanceMeters - b.distanceMeters);
         return { sites, fountains };
       }, [userGpsPos, scanRadiusMeters, activeRouteIds, selectedTags]);
-      const closestPreferredArtifact = nearbyFeatures.sites.find((site) => site.distanceMeters <= 100);
+      const closestPreferredArtifact = nearbyFeatures.sites.find((site) => site.distanceMeters <= scanRadiusMeters);
 
       const googleMapsRouteUrl = useMemo(() => {
         if (activeRouteSites.length === 0) return 'https://www.google.com/maps/place/Venice,+Italy';
@@ -203,12 +346,14 @@
             html: `<div style="width:30px;height:30px;border-radius:50%;background:#10B981;border:3px solid #FFF;display:flex;align-items:center;justify-content:center;font-size:15px;box-shadow:0 0 12px rgba(16,185,129,0.9);cursor:grab;">🚶</div>`,
             iconSize: [30, 30], iconAnchor: [15, 15]
           });
-          const um = L.marker([userGpsPos.lat, userGpsPos.lng], { icon: uIcon, draggable: true }).addTo(group);
-          um.bindTooltip("Drag me anywhere in Venice!");
-          um.on('dragend', (e) => {
-            const p = e.target.getLatLng();
-            setUserGpsPos({ lat: Number(p.lat.toFixed(5)), lng: Number(p.lng.toFixed(5)), label: "Custom Dropped Pin" });
-          });
+          const um = L.marker([userGpsPos.lat, userGpsPos.lng], { icon: uIcon, draggable: isDemoLocation }).addTo(group);
+          um.bindTooltip(isDemoLocation ? "Drag me anywhere in Venice to set your demo location!" : "Your current location");
+          if (isDemoLocation) {
+            um.on('dragend', (e) => {
+              const p = e.target.getLatLng();
+              setUserGpsPos({ lat: Number(p.lat.toFixed(5)), lng: Number(p.lng.toFixed(5)), label: "Custom Demo Location" });
+            });
+          }
         }
 
         VENICE_SITES.filter((s) => s.type !== 'submerged').forEach((site) => {
@@ -229,7 +374,7 @@
           m.bindTooltip(`<strong>${site.name}</strong> (${site.sestiere})`);
           m.on('click', () => setSelectedSite(site));
         });
-      }, [activeRouteSites, routeLegs, activeRouteIds, selectedSite, showFountains, showSubmergedProtected, activeMode, userGpsPos, scanRadiusMeters, selectedTags, dataReady]);
+      }, [activeRouteSites, routeLegs, activeRouteIds, selectedSite, showFountains, showSubmergedProtected, activeMode, userGpsPos, scanRadiusMeters, selectedTags, isDemoLocation, dataReady]);
 
       useEffect(() => {
         if (leafletMapRef.current && selectedSite) {
@@ -349,6 +494,7 @@
           setMapStatusText("Location is unavailable in this browser; drag the map pin instead.");
           return;
         }
+        setIsDemoLocation(false);
         gpsWatchIdRef.current = navigator.geolocation.watchPosition(
           ({ coords }) => {
             setUserGpsPos({ lat: coords.latitude, lng: coords.longitude, label: "Your location" });
@@ -439,15 +585,23 @@
       }
 
       return (
-        <div className={`h-screen w-full flex flex-col overflow-hidden ${highContrast ? 'bg-slate-950 text-white' : 'bg-[#F9F6F0] text-[#1A252C]'}`}>
+        <div
+          className={`app-shell h-screen w-full flex flex-col overflow-hidden ${highContrast ? 'bg-slate-950 text-white' : 'bg-[#F9F6F0] text-[#1A252C]'}`}
+          onPointerMove={(event) => {
+            document.documentElement.style.setProperty('--pointer-x', `${event.clientX}px`);
+            document.documentElement.style.setProperty('--pointer-y', `${event.clientY}px`);
+          }}
+        >
           {/* TOP HEADER */}
-          <header className={`z-30 border-b px-3 py-2 flex flex-wrap items-center justify-between gap-2 ${highContrast ? 'bg-slate-900 border-amber-400' : 'bg-[#0F2C36] border-[#1E4654] text-[#F9F6F0] shadow-md'}`}>
+          <header className={`topbar z-30 border-b px-3 py-2 flex flex-wrap items-center justify-between gap-2 ${highContrast ? 'bg-slate-900 border-amber-400' : 'bg-[#0F2C36] border-[#1E4654] text-[#F9F6F0] shadow-md'}`}>
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-[#B84A39] flex items-center justify-center font-bold shadow border border-[#D4AF37]/40">🧭</div>
+              <div className="brand-mark w-10 h-10 rounded-xl bg-[#B84A39] flex items-center justify-center font-bold shadow border border-[#D4AF37]/40">
+                <Icon name="map" size={20} />
+              </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <h1 className="font-bold text-base tracking-tight" style={{ fontFamily: "'Georgia', serif" }}>Ancient Venice</h1>
-                  <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full bg-[#D4AF37]/20 text-[#D4AF37] border border-[#D4AF37]/40">Venice field guide</span>
+                  <h1 className="hero-title font-bold text-xl tracking-tight">Ancient Venice</h1>
+                  <span className="hero-badge text-[10px] uppercase font-semibold px-2.5 py-1 rounded-full bg-[#D4AF37]/20 text-[#D4AF37] border border-[#D4AF37]/40">Venice field guide</span>
                 </div>
                 <p className="text-[10px] text-slate-300 hidden sm:block">WPI Venice Project Center • Historical & Archaeological Navigator</p>
               </div>
@@ -456,17 +610,17 @@
             {/* MODE TABS */}
             <nav className="flex items-center bg-[#091D24] p-1 rounded-xl border border-slate-700/70 gap-1 overflow-x-auto">
               {[
-                { id: 'route-builder', label: '🗺️ Route Builder' },
-                { id: 'street-wander', label: '📡 Near Me (GPS)' },
-                { id: 'historical-map', label: '🏺 Historical Map (soon)' },
-                { id: 'research-hub', label: '📚 WPI Research' }
+                { id: 'route-builder', label: 'Route Builder', icon: 'route' },
+                { id: 'street-wander', label: 'Near Me (GPS)', icon: 'gps' },
+                { id: 'historical-map', label: 'Historical Map (soon)', icon: 'map' },
+                { id: 'research-hub', label: 'WPI Research', icon: 'book' }
               ].map((t) => (
                 <button
                   key={t.id}
                   onClick={() => setActiveMode(t.id)}
                   className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap ${activeMode === t.id ? 'bg-[#B84A39] text-white' : 'text-slate-300 hover:text-white'}`}
                 >
-                  {t.label}
+                  <Icon name={t.icon} size={14} /> <span>{t.label}</span>
                 </button>
               ))}
             </nav>
@@ -479,7 +633,7 @@
                 rel="noopener noreferrer"
                 className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-400/40"
               >
-                ↗ Google Maps
+                Google Maps <Icon name="arrow" size={14} />
               </a>
               <button
                 onClick={() => setHighContrast(!highContrast)}
@@ -494,19 +648,48 @@
           <div className="flex-1 flex flex-col lg:flex-row relative overflow-hidden">
             
             {/* LEFT SIDEBAR */}
-            <aside className={`z-20 w-full lg:w-[350px] flex-shrink-0 border-r flex flex-col overflow-y-auto p-3.5 space-y-3.5 max-h-[38vh] lg:max-h-none ${highContrast ? 'bg-slate-900 border-amber-400/50' : 'bg-[#F9F6F0] border-[#E2D9C8]'}`}>
-              
+            <aside
+              className={`workspace-sidebar z-20 w-full lg:w-[350px] flex-shrink-0 border-r flex flex-col overflow-y-auto p-3.5 space-y-3.5 max-h-[38vh] lg:max-h-none ${sidebarCollapsed ? 'workspace-sidebar--collapsed' : ''} ${highContrast ? 'bg-slate-900 border-amber-400/50' : 'bg-[#F9F6F0] border-[#E2D9C8]'}`}
+              style={{ '--sidebar-width': `${panelSizes.sidebarWidth}px`, '--sidebar-height': `${panelSizes.sidebarHeight}px` }}
+            >
+              <button
+                type="button"
+                className="sidebar-toggle"
+                onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+                aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                aria-expanded={!sidebarCollapsed}
+                title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              >
+                <Icon name={sidebarCollapsed ? 'panelOpen' : 'panel'} size={17} />
+                {!sidebarCollapsed && <span>Collapse panel</span>}
+              </button>
+              {!sidebarCollapsed && <div className="sidebar-content">
               {activeMode === 'route-builder' && (
                 <>
-                  <div className="p-3 rounded-xl bg-[#0F2C36] text-white border border-[#D4AF37]/30">
-                    <div className="flex justify-between items-center mb-1">
-                      <span className="text-[11px] uppercase font-bold text-[#D4AF37]">Choose Your Walking Stops</span>
-                      <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded">{routeStats.distanceKm} km • ~{routeStats.walkMins}m</span>
-                    </div>
+                  <div className="route-hero p-4 rounded-xl bg-[#0F2C36] text-white border border-[#D4AF37]/30 reveal-on-scroll">
+                    <div className="hero-badge-small"><span className="hero-badge-dot" />WPI VENICE PROJECT CENTER</div>
+                    <h2 className="route-hero-title">Choose Your Walking Stops</h2>
                     <p className="text-xs text-slate-200">Pick the 4–5 landmarks you want to visit. Only the landmarks you choose become route stops.</p>
+                    <div className="route-metrics">
+                      <div className="metric-card">
+                        <Icon name="distance" size={16} />
+                        <span className="metric-value">{routeStats.distanceKm} km</span>
+                        <span className="metric-label">Distance</span>
+                      </div>
+                      <div className="metric-card">
+                        <Icon name="clock" size={16} />
+                        <span className="metric-value">~{routeStats.walkMins}m</span>
+                        <span className="metric-label">Walking time</span>
+                      </div>
+                      <div className="metric-card">
+                        <Icon name="pin" size={16} />
+                        <span className="metric-value">{selectedStopIds.length} / 5</span>
+                        <span className="metric-label">Selected stops</span>
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="space-y-1">
+                  <div className="landmark-list space-y-1 reveal-on-scroll">
                     <div className="flex justify-between items-center">
                       <h3 className="text-xs font-bold uppercase">Available Landmarks</h3>
                       <span className={`text-[10px] font-bold ${selectedStopIds.length >= 4 && selectedStopIds.length <= 5 ? 'text-emerald-700' : 'text-[#B84A39]'}`}>{selectedStopIds.length} / 4–5 selected</span>
@@ -516,7 +699,7 @@
                       const isUnavailable = accessibleOnly && !site.accessibleStepFree && !isSelected;
                       const cannotAddMore = !isSelected && selectedStopIds.length >= 5;
                       return (
-                        <label key={site.id} className={`flex items-start gap-2 p-2 rounded-lg border text-xs ${isSelected ? 'border-[#B84A39] bg-[#B84A39]/5' : 'border-[#E2D9C8] bg-white'} ${isUnavailable || cannotAddMore ? 'opacity-50' : 'cursor-pointer'}`}>
+                        <label key={site.id} className={`landmark-option flex items-start gap-2 p-2 rounded-lg border text-xs ${isSelected ? 'border-[#B84A39] bg-[#B84A39]/5' : 'border-[#E2D9C8] bg-white'} ${isUnavailable || cannotAddMore ? 'opacity-50' : 'cursor-pointer'}`}>
                           <input
                             type="checkbox"
                             checked={isSelected}
@@ -574,7 +757,8 @@
                   </div>
                   </div>
 
-                  <button disabled={isBuildingRoute || selectedStopIds.length < 4 || selectedStopIds.length > 5} onClick={handleBuildStoryRoute} className="w-full py-2 px-3 rounded-xl bg-[#0F2C36] hover:bg-[#194554] disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-xs shadow border border-[#D4AF37]/40">
+                  <button disabled={isBuildingRoute || selectedStopIds.length < 4 || selectedStopIds.length > 5} onClick={handleBuildStoryRoute} className="action-button w-full py-2 px-3 rounded-xl bg-[#0F2C36] hover:bg-[#194554] disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-xs shadow border border-[#D4AF37]/40">
+                    <Icon name="route" size={15} />
                     {isBuildingRoute ? 'Finding walkable paths...' : 'Build Route from My Selected Stops'}
                   </button>
 
@@ -635,8 +819,32 @@
                       <span className="text-xs font-bold text-[#D4AF37]">📡 "What's Near Me" GPS Radar</span>
                       <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">{nearbyFeatures.sites.length} matches</span>
                     </div>
+                    <label className="mt-2 flex items-center justify-between gap-2 rounded-lg bg-white/10 px-2 py-1.5 text-xs font-semibold cursor-pointer">
+                      <span>Demo location — drag the map pin</span>
+                      <input
+                        type="checkbox"
+                        checked={isDemoLocation}
+                        onChange={(e) => {
+                          const enabled = e.target.checked;
+                          if (enabled && gpsWatchIdRef.current !== null) {
+                            navigator.geolocation.clearWatch(gpsWatchIdRef.current);
+                            gpsWatchIdRef.current = null;
+                            setIsTrackingLocation(false);
+                          }
+                          setIsDemoLocation(enabled);
+                          setMapStatusText(enabled
+                            ? "Demo location enabled — drag the green map pin to move it."
+                            : "Demo location disabled — use live location to follow your device.");
+                        }}
+                        aria-label="Enable demo location"
+                        className="accent-[#D4AF37]"
+                      />
+                    </label>
+                    <p className="text-[10px] text-slate-200 mt-1">
+                      {userGpsPos.label}: {userGpsPos.lat.toFixed(5)}, {userGpsPos.lng.toFixed(5)}
+                    </p>
                     <button onClick={handleToggleLocationTracking} className={`w-full mt-2 py-1.5 rounded-lg ${isTrackingLocation ? 'bg-[#B84A39] hover:bg-red-700' : 'bg-emerald-700 hover:bg-emerald-600'} text-white text-xs font-bold`}>{isTrackingLocation ? 'Stop live location' : 'Start live location'}</button>
-                    <p className="text-xs text-slate-200 mt-2 mb-2">Live GPS updates preferred artifacts as you walk. The nearby list excludes your selected route stops.</p>
+                    <p className="text-xs text-slate-200 mt-2 mb-2">Use the demo toggle to drag the map pin, or enable live GPS. The nearby list excludes your selected route stops.</p>
                     <button onClick={handleSimulateWalkingStep} className="w-full py-2 px-3 rounded-lg bg-[#B84A39] text-white font-bold text-xs">
                       🚶 Simulate Walking 100m in Venice
                     </button>
@@ -644,9 +852,9 @@
 
                   <div className="p-2.5 rounded-xl bg-white border border-[#D5CBB8] text-slate-900">
                     <div className="flex justify-between text-xs font-bold">
-                      <span>Scan Radius:</span><span className="text-[#B84A39]">{scanRadiusMeters}m</span>
+                      <span>Preferred-find radius:</span><span className="text-[#B84A39]">{scanRadiusMeters}m</span>
                     </div>
-                    <input type="range" min={100} max={800} step={50} value={scanRadiusMeters} onChange={(e) => setScanRadiusMeters(Number(e.target.value))} className="w-full accent-[#B84A39]" />
+                    <input type="range" min={25} max={800} step={25} value={scanRadiusMeters} onChange={(e) => setScanRadiusMeters(Number(e.target.value))} aria-label="Preferred-find radius in meters" className="w-full accent-[#B84A39]" />
                   </div>
 
                   {closestPreferredArtifact && (
@@ -691,12 +899,15 @@
               )}
 
               {activeMode === 'research-hub' && (
-                <div className="space-y-3">
+                <div className="space-y-3 reveal-on-scroll">
                   <div className="flex justify-between items-center">
                     <span className="text-xs font-bold uppercase text-[#B84A39]">WPI Research Catalog</span>
-                    <button onClick={handleExportGeoJSON} className="px-2 py-1 rounded bg-[#0F2C36] text-[#D4AF37] text-[10px] font-bold">⬇ Export GeoJSON</button>
+                    <button onClick={handleExportGeoJSON} className="icon-action px-2 py-1 rounded bg-[#0F2C36] text-[#D4AF37] text-[10px] font-bold"><Icon name="download" size={13} /> Export GeoJSON</button>
                   </div>
-                  <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search Ca' Rezzonico, Longhena..." className="w-full px-2.5 py-1.5 rounded-lg border border-[#D5CBB8] bg-white text-slate-900 text-xs" />
+                  <label className="search-field">
+                    <Icon name="search" size={15} />
+                    <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search Ca' Rezzonico, Longhena..." className="w-full px-2.5 py-1.5 rounded-lg border border-[#D5CBB8] bg-white text-slate-900 text-xs" />
+                  </label>
                   <select value={sestiereFilter} onChange={(e) => setSestiereFilter(e.target.value)} aria-label="Filter by district" className="w-full px-2.5 py-1.5 rounded-lg border border-[#D5CBB8] bg-white text-slate-900 text-xs">
                     <option value="All">All districts</option>
                     {[...new Set(VENICE_SITES.map((site) => site.sestiere))].sort().map((sestiere) => <option key={sestiere} value={sestiere}>{sestiere}</option>)}
@@ -711,17 +922,34 @@
                   </div>
                 </div>
               )}
+              </div>}
             </aside>
+            <button
+              type="button"
+              className={`panel-resizer ${sidebarCollapsed ? 'panel-resizer--hidden' : ''}`}
+              role="separator"
+              aria-label="Resize landmark panel"
+              aria-orientation={compactLayout ? 'horizontal' : 'vertical'}
+              aria-valuenow={compactLayout ? panelSizes.sidebarHeight : panelSizes.sidebarWidth}
+              onPointerDown={(event) => beginPanelResize('sidebar', event)}
+              onPointerMove={movePanelResize}
+              onPointerUp={stopPanelResize}
+              onPointerCancel={stopPanelResize}
+              onKeyDown={(event) => handlePanelResizeKeyDown('sidebar', event)}
+              title="Drag to resize landmark panel"
+            >
+              <span />
+            </button>
 
             {/* CENTER INTERACTIVE MAP */}
-            <main className="flex-1 relative bg-[#0B222B] overflow-hidden flex flex-col justify-between min-h-[320px]">
+            <main className="map-stage flex-1 relative bg-[#0B222B] overflow-hidden flex flex-col justify-between min-h-[320px]">
               {/* Top Floating Map Style Switcher */}
               <div className="z-20 m-2.5 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
-                <div className="pointer-events-auto bg-[#0F2C36]/95 text-[#F9F6F0] px-3 py-1 rounded-xl border border-[#D4AF37]/40 shadow text-xs flex items-center gap-2">
+                <div className="map-glass pointer-events-auto bg-[#0F2C36]/95 text-[#F9F6F0] px-3 py-1 rounded-xl border border-[#D4AF37]/40 shadow text-xs flex items-center gap-2 reveal-on-scroll">
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
                   <span>{mapStatusText}</span>
                 </div>
-                <div className="pointer-events-auto flex items-center gap-1 bg-[#0F2C36]/95 p-1 rounded-xl border border-slate-700 shadow text-xs">
+                <div className="map-glass pointer-events-auto flex items-center gap-1 bg-[#0F2C36]/95 p-1 rounded-xl border border-slate-700 shadow text-xs">
                   <button onClick={() => setGoogleMapTileStyle('roadmap')} className={`px-2 py-1 rounded-lg font-semibold ${googleMapTileStyle === 'roadmap' ? 'bg-[#B84A39] text-white' : 'text-slate-300'}`}>Street map</button>
                   <button onClick={() => setGoogleMapTileStyle('satellite')} className={`px-2 py-1 rounded-lg font-semibold ${googleMapTileStyle === 'satellite' ? 'bg-[#B84A39] text-white' : 'text-slate-300'}`}>Satellite</button>
                 </div>
@@ -731,7 +959,7 @@
 
               {/* Bottom Map Legend */}
               <div className="z-20 m-2.5 pointer-events-none flex justify-between items-center">
-                <div className="pointer-events-auto bg-[#0F2C36]/90 px-3 py-1.5 rounded-xl border border-slate-700 text-[11px] text-slate-200 flex flex-wrap gap-3 shadow">
+                <div className="map-glass pointer-events-auto bg-[#0F2C36]/90 px-3 py-1.5 rounded-xl border border-slate-700 text-[11px] text-slate-200 flex flex-wrap gap-3 shadow reveal-on-scroll">
                   <span>🔴 Route Stop</span>
                   <span>🔹 Preferred nearby artifact</span>
                   <span>✦ Tassini / Altar</span>
@@ -743,7 +971,27 @@
 
             {/* RIGHT RESEARCH & AUDIO STORY DRAWER */}
             {selectedSite && (
-              <section className={`z-20 w-full lg:w-[390px] flex-shrink-0 border-l flex flex-col overflow-y-auto max-h-[45vh] lg:max-h-none ${highContrast ? 'bg-slate-900 border-amber-400' : 'bg-[#F9F6F0] border-[#E2D9C8] shadow-xl'}`}>
+              <>
+              <button
+                type="button"
+                className="panel-resizer panel-resizer--research"
+                role="separator"
+                aria-label="Resize research panel"
+                aria-orientation={compactLayout ? 'horizontal' : 'vertical'}
+                aria-valuenow={compactLayout ? panelSizes.researchHeight : panelSizes.researchWidth}
+                onPointerDown={(event) => beginPanelResize('research', event)}
+                onPointerMove={movePanelResize}
+                onPointerUp={stopPanelResize}
+                onPointerCancel={stopPanelResize}
+                onKeyDown={(event) => handlePanelResizeKeyDown('research', event)}
+                title="Drag to resize research panel"
+              >
+                <span />
+              </button>
+              <section
+                className={`research-drawer z-20 w-full lg:w-[390px] flex-shrink-0 border-l flex flex-col overflow-y-auto max-h-[45vh] lg:max-h-none ${highContrast ? 'bg-slate-900 border-amber-400' : 'bg-[#F9F6F0] border-[#E2D9C8] shadow-xl'}`}
+                style={{ '--research-width': `${panelSizes.researchWidth}px`, '--research-height': `${panelSizes.researchHeight}px` }}
+              >
                 <div className="p-3.5 bg-[#0F2C36] text-[#F9F6F0] border-b border-[#D4AF37]/30 sticky top-0 z-10">
                   <div className="flex flex-wrap items-center justify-between gap-1 mb-1">
                     <div className="flex gap-1.5">
@@ -775,7 +1023,7 @@
                 </div>
 
                 {/* Standardized 8-Point WPI Research Questions Body */}
-                <div className="p-3.5 space-y-3 text-xs leading-relaxed">
+                <div className="research-drawer-body p-3.5 space-y-3 text-xs leading-relaxed">
                   <div className="p-3 rounded-xl bg-white text-slate-900 border border-[#E2D9C8]">
                     <h3 className="text-[10px] font-bold uppercase text-[#B84A39] mb-1">📖 Narrative & Historical Context</h3>
                     <p>{selectedSite.narrativeScript}</p>
@@ -807,6 +1055,7 @@
                   </div>
                 </div>
               </section>
+              </>
             )}
           </div>
 
