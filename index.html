@@ -70,6 +70,7 @@
     // Complete Dataset combining Tour Information + WPI IQPs + GNA
     let VENICE_SITES = [];
     let DRINKING_FOUNTAINS = [];
+    let VENETIAN_CHURCHES = [];
 
     const PRESET_ROUTES = [
       { id: 'palaces', title: "Aristocratic Palaces to Public Museums", duration: "Santa Croce & Dorsoduro walk", stops: ['ca-pesaro', 'natural-history-fondaco', 'scuola-san-giovanni', 'ca-rezzonico', 'peggy-guggenheim'], tags: ["Adaptive Reuse", "Politics & Republic"] },
@@ -93,6 +94,8 @@
       const [googleMapTileStyle, setGoogleMapTileStyle] = useState('roadmap');
       const [selectedStopIds, setSelectedStopIds] = useState(['st-marks-basilica', 'calle-dei-fuseri', 'rialto-bridge', 'ca-rezzonico', 'peggy-guggenheim']);
       const [selectedTags, setSelectedTags] = useState(['Adaptive Reuse', 'Bubonic Plague', 'Guilds & Glass']);
+      const [includeChurches, setIncludeChurches] = useState(false);
+      const [showAllChurches, setShowAllChurches] = useState(false);
       const [accessibleOnly, setAccessibleOnly] = useState(false);
       const [activeRouteIds, setActiveRouteIds] = useState([]);
       const [routeLegs, setRouteLegs] = useState([]);
@@ -105,6 +108,7 @@
       const [showFountains, setShowFountains] = useState(true);
       const [showSubmergedProtected, setShowSubmergedProtected] = useState(true);
       const [selectedSite, setSelectedSite] = useState(null);
+      const [selectedChurch, setSelectedChurch] = useState(null);
       const [showGoogleEmbedModal, setShowGoogleEmbedModal] = useState(false);
       const [highContrast, setHighContrast] = useState(false);
 
@@ -199,16 +203,22 @@
           fetch('/api/fountains').then(async (response) => {
             if (!response.ok) throw new Error(`Fountain data request failed (${response.status}).`);
             return response.json();
+          }),
+          fetch('/api/churches').then(async (response) => {
+            if (!response.ok) throw new Error(`Church data request failed (${response.status}).`);
+            return response.json();
           })
-        ]).then(([sites, fountains]) => {
-          if (!Array.isArray(sites) || !Array.isArray(fountains) || sites.length === 0) {
+        ]).then(([sites, fountains, churches]) => {
+          if (!Array.isArray(sites) || !Array.isArray(fountains) || !Array.isArray(churches)
+            || sites.length === 0 || churches.length === 0) {
             throw new Error("The server returned an invalid or empty Venice dataset.");
           }
           if (cancelled) return;
           VENICE_SITES = sites;
           DRINKING_FOUNTAINS = fountains;
+          VENETIAN_CHURCHES = churches;
           setSelectedSite(sites[0]);
-          setMapStatusText(`${sites.length} landmarks & ${fountains.length} fountains`);
+          setMapStatusText(`${sites.length} landmarks, ${churches.length} churches & ${fountains.length} fountains`);
           setDataReady(true);
           setDataLoadError('');
         }).catch((error) => {
@@ -267,10 +277,17 @@
           .map((site) => ({ ...site, distanceMeters: getDistanceMeters(userGpsPos.lat, userGpsPos.lng, site.lat, site.lng) }))
           .filter((site) => site.distanceMeters <= scanRadiusMeters)
           .sort((a, b) => a.distanceMeters - b.distanceMeters);
+        const churches = includeChurches
+          ? VENETIAN_CHURCHES
+            .map((church) => ({ ...church, distanceMeters: getDistanceMeters(userGpsPos.lat, userGpsPos.lng, church.lat, church.lng) }))
+            .filter((church) => church.distanceMeters <= scanRadiusMeters)
+            .sort((a, b) => a.distanceMeters - b.distanceMeters)
+          : [];
         const fountains = DRINKING_FOUNTAINS.map((f) => ({ ...f, distanceMeters: getDistanceMeters(userGpsPos.lat, userGpsPos.lng, f.lat, f.lng) })).filter((f) => f.distanceMeters <= scanRadiusMeters).sort((a, b) => a.distanceMeters - b.distanceMeters);
-        return { sites, fountains };
-      }, [userGpsPos, scanRadiusMeters, activeRouteIds, selectedTags]);
+        return { sites, churches, fountains };
+      }, [userGpsPos, scanRadiusMeters, activeRouteIds, selectedTags, includeChurches]);
       const closestPreferredArtifact = nearbyFeatures.sites.find((site) => site.distanceMeters <= scanRadiusMeters);
+      const closestPreferredChurch = nearbyFeatures.churches[0];
 
       const googleMapsRouteUrl = useMemo(() => {
         if (activeRouteSites.length === 0) return 'https://www.google.com/maps/place/Venice,+Italy';
@@ -339,6 +356,29 @@
           });
         }
 
+        const nearbyChurchIds = new Set(nearbyFeatures.churches.map((church) => church.id));
+        const visibleChurches = showAllChurches
+          ? VENETIAN_CHURCHES
+          : VENETIAN_CHURCHES.filter((church) => nearbyChurchIds.has(church.id) || selectedChurch?.id === church.id);
+        visibleChurches.forEach((church) => {
+          const isSelected = selectedChurch?.id === church.id;
+          const icon = L.divIcon({
+            className: '',
+            html: `<div style="width:${isSelected ? 30 : 24}px;height:${isSelected ? 30 : 24}px;border-radius:50%;background:#7C3AED;border:2px solid #FFF;display:flex;align-items:center;justify-content:center;color:white;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,0.45);">✝</div>`,
+            iconSize: [30, 30], iconAnchor: [15, 15]
+          });
+          const marker = L.marker([church.lat, church.lng], { icon }).addTo(group);
+          const popup = document.createElement('div');
+          const title = document.createElement('strong');
+          title.textContent = church.name;
+          const location = document.createElement('p');
+          location.textContent = `${church.district} · ${church.address}`;
+          popup.append(title, location);
+          marker.bindPopup(popup);
+          marker.on('click', () => setSelectedChurch(church));
+          if (isSelected) marker.openPopup();
+        });
+
         if (activeMode === 'street-wander') {
           L.circle([userGpsPos.lat, userGpsPos.lng], { radius: scanRadiusMeters, color: '#10B981', weight: 1.5, fillColor: '#10B981', fillOpacity: 0.12 }).addTo(group);
           const uIcon = L.divIcon({
@@ -374,7 +414,7 @@
           m.bindTooltip(`<strong>${site.name}</strong> (${site.sestiere})`);
           m.on('click', () => setSelectedSite(site));
         });
-      }, [activeRouteSites, routeLegs, activeRouteIds, selectedSite, showFountains, showSubmergedProtected, activeMode, userGpsPos, scanRadiusMeters, selectedTags, isDemoLocation, dataReady]);
+      }, [activeRouteSites, routeLegs, activeRouteIds, selectedSite, selectedChurch, showFountains, showSubmergedProtected, showAllChurches, nearbyFeatures.churches, activeMode, userGpsPos, scanRadiusMeters, selectedTags, isDemoLocation, dataReady]);
 
       useEffect(() => {
         if (leafletMapRef.current && selectedSite) {
@@ -741,6 +781,16 @@
                   <div>
                     <h3 className="text-[10px] font-bold uppercase opacity-75 mb-1">Walking Preferences — Nearby Finds</h3>
                     <p className="text-[10px] opacity-75 mb-2">These interests do not add route stops. While you walk, matching artifacts outside your chosen route appear when they are nearby.</p>
+                    <label className="mb-2 flex items-center justify-between gap-2 p-2 rounded-lg border border-violet-500/30 bg-violet-500/5 cursor-pointer text-xs font-semibold">
+                      <span>🏛 Venetian Churches (Past IQP data)</span>
+                      <input
+                        type="checkbox"
+                        checked={includeChurches}
+                        onChange={(event) => setIncludeChurches(event.target.checked)}
+                        aria-label="Show nearby Venetian churches while walking"
+                        className="accent-violet-700"
+                      />
+                    </label>
                   <div className="flex flex-wrap gap-1">
                     {allAvailableTags.map((tag) => {
                       const active = selectedTags.includes(tag);
@@ -817,7 +867,7 @@
                   <div className="p-3 rounded-xl bg-[#0F2C36] text-white border border-[#D4AF37]/40">
                     <div className="flex justify-between items-center mb-1">
                       <span className="text-xs font-bold text-[#D4AF37]">📡 "What's Near Me" GPS Radar</span>
-                      <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">{nearbyFeatures.sites.length} matches</span>
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">{nearbyFeatures.sites.length + nearbyFeatures.churches.length} matches</span>
                     </div>
                     <label className="mt-2 flex items-center justify-between gap-2 rounded-lg bg-white/10 px-2 py-1.5 text-xs font-semibold cursor-pointer">
                       <span>Demo location — drag the map pin</span>
@@ -865,6 +915,14 @@
                     </div>
                   )}
 
+                  {closestPreferredChurch && (
+                    <div role="status" className="p-2.5 rounded-xl bg-violet-500/10 border-2 border-violet-400">
+                      <span className="text-[10px] font-bold uppercase text-violet-800">Nearby church preference match • {closestPreferredChurch.distanceMeters}m</span>
+                      <h4 className="font-bold text-xs mt-1">{closestPreferredChurch.name}</h4>
+                      <p className="text-xs opacity-90">{closestPreferredChurch.description}</p>
+                    </div>
+                  )}
+
                   {proximityAlert && (
                     <div className="p-2.5 rounded-xl bg-amber-500/15 border-2 border-[#D4AF37]">
                       <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-[#B84A39] text-white">GPS Trigger • {proximityAlert.distance}</span>
@@ -885,6 +943,30 @@
                       <p className="p-2 rounded-lg bg-white text-slate-600 border border-[#E2D9C8] text-xs">No preferred artifacts are nearby. Increase the scan radius or update your walking preferences in Route Builder.</p>
                     )}
                   </div>
+
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-bold uppercase">Preferred Churches Within {scanRadiusMeters}m</h4>
+                    {nearbyFeatures.churches.map((church) => (
+                      <button
+                        key={church.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedChurch(church);
+                          leafletMapRef.current?.setView([church.lat, church.lng], 16);
+                        }}
+                        className="w-full p-2 rounded-lg bg-white text-slate-900 border border-violet-200 cursor-pointer flex justify-between items-center text-xs"
+                      >
+                        <span className="font-bold truncate pr-2">{church.name}</span>
+                        <span className="px-2 py-0.5 rounded bg-violet-800 text-white font-bold text-[10px]">{church.distanceMeters}m</span>
+                      </button>
+                    ))}
+                    {includeChurches && nearbyFeatures.churches.length === 0 && (
+                      <p className="p-2 rounded-lg bg-white text-slate-600 border border-[#E2D9C8] text-xs">No preferred churches are within range. Increase the scan radius to see more.</p>
+                    )}
+                    {!includeChurches && (
+                      <p className="p-2 rounded-lg bg-white text-slate-600 border border-[#E2D9C8] text-xs">Choose Venetian Churches in Route Builder preferences to receive nearby church alerts.</p>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -900,6 +982,42 @@
 
               {activeMode === 'research-hub' && (
                 <div className="space-y-3 reveal-on-scroll">
+                  <section className="p-2.5 rounded-xl bg-white border border-violet-200 text-slate-900">
+                    <h3 className="text-xs font-bold uppercase text-violet-800">Past IQP Data</h3>
+                    <p className="mt-1 mb-2 text-[10px] text-slate-600">Browse historic church records and focus their coordinates on the map.</p>
+                    <details>
+                      <summary className="cursor-pointer rounded-lg bg-violet-50 border border-violet-100 p-2 text-xs font-semibold">
+                        Venetian Churches · {VENETIAN_CHURCHES.length} records
+                      </summary>
+                      <div className="mt-1 space-y-1">
+                        {VENETIAN_CHURCHES.map((church) => (
+                          <details key={church.id} className="p-2 rounded-lg border border-[#E2D9C8] text-xs">
+                            <summary className="cursor-pointer font-semibold">
+                              {church.name}
+                              <span className="block text-[10px] font-normal text-slate-500">{church.district} · {church.island}</span>
+                            </summary>
+                            <div className="mt-2 space-y-1 text-[11px]">
+                              <p><strong>Address:</strong> {church.address}</p>
+                              <p><strong>Founded / built:</strong> {church.yearFounded}</p>
+                              <p>{church.description}</p>
+                              <p><strong>Historical context:</strong> {church.historicalContext}</p>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedChurch(church);
+                                  leafletMapRef.current?.setView([church.lat, church.lng], 16);
+                                  setMapStatusText(`Map focused on ${church.name}`);
+                                }}
+                                className="mt-1 px-2 py-1 rounded bg-violet-800 text-white text-[10px] font-semibold"
+                              >
+                                Show point on map
+                              </button>
+                            </div>
+                          </details>
+                        ))}
+                      </div>
+                    </details>
+                  </section>
                   <div className="flex justify-between items-center">
                     <span className="text-xs font-bold uppercase text-[#B84A39]">WPI Research Catalog</span>
                     <button onClick={handleExportGeoJSON} className="icon-action px-2 py-1 rounded bg-[#0F2C36] text-[#D4AF37] text-[10px] font-bold"><Icon name="download" size={13} /> Export GeoJSON</button>
@@ -952,6 +1070,16 @@
                 <div className="map-glass pointer-events-auto flex items-center gap-1 bg-[#0F2C36]/95 p-1 rounded-xl border border-slate-700 shadow text-xs">
                   <button onClick={() => setGoogleMapTileStyle('roadmap')} className={`px-2 py-1 rounded-lg font-semibold ${googleMapTileStyle === 'roadmap' ? 'bg-[#B84A39] text-white' : 'text-slate-300'}`}>Street map</button>
                   <button onClick={() => setGoogleMapTileStyle('satellite')} className={`px-2 py-1 rounded-lg font-semibold ${googleMapTileStyle === 'satellite' ? 'bg-[#B84A39] text-white' : 'text-slate-300'}`}>Satellite</button>
+                  <label className="flex items-center gap-1.5 px-2 py-1 text-slate-200 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showAllChurches}
+                      onChange={(event) => setShowAllChurches(event.target.checked)}
+                      aria-label="Show all Venetian church points on the map"
+                      className="accent-violet-500"
+                    />
+                    All churches
+                  </label>
                 </div>
               </div>
 
@@ -965,6 +1093,7 @@
                   <span>✦ Tassini / Altar</span>
                   <span>🔒 300m Obfuscated Dig</span>
                   <span>💧 Potable Fountain</span>
+                  <span>✝ Venetian Church</span>
                 </div>
               </div>
             </main>

@@ -1,3 +1,4 @@
+import csv
 import errno
 import json
 import math
@@ -25,6 +26,61 @@ class VeniceHTTPServer(ThreadingHTTPServer):
 def load_records(filename):
     with (DATA_DIR / filename).open(encoding="utf-8") as data_file:
         return json.load(data_file)
+
+
+def load_churches():
+    required_fields = (
+        "Location Name",
+        "Island",
+        "Sestiere / District",
+        "Specific Location / Address",
+        "Latitude",
+        "Longitude",
+        "Year Built / Founded",
+        "Description & Significance",
+        "Key Historical Context",
+    )
+    churches = []
+    with (DATA_DIR / "venetian_churches.csv").open(
+        encoding="utf-8-sig", newline=""
+    ) as data_file:
+        reader = csv.DictReader(data_file)
+        if reader.fieldnames is None or any(
+            field not in reader.fieldnames for field in required_fields
+        ):
+            raise ValueError("The Venetian churches dataset is missing required columns.")
+        for index, row in enumerate(reader, start=1):
+            try:
+                latitude = float(row["Latitude"])
+                longitude = float(row["Longitude"])
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"The Venetian churches dataset has invalid coordinates on row {index}."
+                ) from error
+            if (
+                not math.isfinite(latitude)
+                or not math.isfinite(longitude)
+                or not -90 <= latitude <= 90
+                or not -180 <= longitude <= 180
+            ):
+                raise ValueError(
+                    f"The Venetian churches dataset has invalid coordinates on row {index}."
+                )
+            churches.append(
+                {
+                    "id": f"venetian-church-{index:03}",
+                    "name": row["Location Name"].strip(),
+                    "island": row["Island"].strip(),
+                    "district": row["Sestiere / District"].strip(),
+                    "address": row["Specific Location / Address"].strip(),
+                    "lat": latitude,
+                    "lng": longitude,
+                    "yearFounded": row["Year Built / Founded"].strip(),
+                    "description": row["Description & Significance"].strip(),
+                    "historicalContext": row["Key Historical Context"].strip(),
+                }
+            )
+    return churches
 
 
 def build_route(stop_ids, accessible_only=False):
@@ -219,6 +275,8 @@ class VeniceRequestHandler(SimpleHTTPRequestHandler):
             return self.send_json(load_records("sites.json"))
         if path == "/api/fountains":
             return self.send_json(load_records("fountains.json"))
+        if path == "/api/churches":
+            return self.send_json(load_churches())
         if path == "/api/geojson":
             sites = load_records("sites.json")
             return self.send_json(

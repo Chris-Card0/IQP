@@ -1,8 +1,10 @@
 import io
 import json
+import threading
 import unittest
 from unittest.mock import patch
 from urllib.error import URLError
+from urllib.request import urlopen as request_urlopen
 
 from server import (
     VeniceHTTPServer,
@@ -10,6 +12,7 @@ from server import (
     build_route,
     decode_polyline,
     get_walkable_route,
+    load_churches,
     load_records,
 )
 
@@ -212,6 +215,40 @@ class ServerStartupTests(unittest.TestCase):
 
         with self.assertRaises(OSError):
             VeniceHTTPServer(first_server.server_address, VeniceRequestHandler)
+
+
+class ChurchDataTests(unittest.TestCase):
+    def test_church_csv_is_normalized_with_valid_coordinates(self):
+        churches = load_churches()
+
+        self.assertGreater(len(churches), 0)
+        self.assertEqual(churches[0]["name"], "Basilica di San Marco (St. Mark's Basilica)")
+        self.assertAlmostEqual(churches[0]["lat"], 45.4345)
+        self.assertAlmostEqual(churches[0]["lng"], 12.3397)
+        self.assertTrue(all(church["id"] for church in churches))
+        self.assertTrue(
+            all(
+                -90 <= church["lat"] <= 90 and -180 <= church["lng"] <= 180
+                for church in churches
+            )
+        )
+
+    def test_churches_api_returns_csv_records_as_json(self):
+        server = VeniceHTTPServer(("127.0.0.1", 0), VeniceRequestHandler)
+        self.addCleanup(server.server_close)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        self.addCleanup(server_thread.join)
+        self.addCleanup(server.shutdown)
+
+        with request_urlopen(
+            f"http://127.0.0.1:{server.server_address[1]}/api/churches"
+        ) as response:
+            churches = json.load(response)
+
+        self.assertEqual(len(churches), len(load_churches()))
+        self.assertEqual(churches[0]["id"], "venetian-church-001")
+        self.assertIn("historicalContext", churches[0])
 
 
 if __name__ == "__main__":
