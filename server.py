@@ -28,7 +28,7 @@ def load_records(filename):
         return json.load(data_file)
 
 
-def load_churches():
+def load_historical_locations(filename, dataset_name, id_prefix):
     required_fields = (
         "Location Name",
         "Island",
@@ -40,22 +40,22 @@ def load_churches():
         "Description & Significance",
         "Key Historical Context",
     )
-    churches = []
-    with (DATA_DIR / "venetian_churches.csv").open(
-        encoding="utf-8-sig", newline=""
-    ) as data_file:
+    locations = []
+    with (DATA_DIR / filename).open(encoding="utf-8-sig", newline="") as data_file:
         reader = csv.DictReader(data_file)
         if reader.fieldnames is None or any(
             field not in reader.fieldnames for field in required_fields
         ):
-            raise ValueError("The Venetian churches dataset is missing required columns.")
+            raise ValueError(
+                f"The Venetian {dataset_name} dataset is missing required columns."
+            )
         for index, row in enumerate(reader, start=1):
             try:
                 latitude = float(row["Latitude"])
                 longitude = float(row["Longitude"])
             except (TypeError, ValueError) as error:
                 raise ValueError(
-                    f"The Venetian churches dataset has invalid coordinates on row {index}."
+                    f"The Venetian {dataset_name} dataset has invalid coordinates on row {index}."
                 ) from error
             if (
                 not math.isfinite(latitude)
@@ -64,11 +64,11 @@ def load_churches():
                 or not -180 <= longitude <= 180
             ):
                 raise ValueError(
-                    f"The Venetian churches dataset has invalid coordinates on row {index}."
+                    f"The Venetian {dataset_name} dataset has invalid coordinates on row {index}."
                 )
-            churches.append(
+            locations.append(
                 {
-                    "id": f"venetian-church-{index:03}",
+                    "id": f"{id_prefix}-{index:03}",
                     "name": row["Location Name"].strip(),
                     "island": row["Island"].strip(),
                     "district": row["Sestiere / District"].strip(),
@@ -80,14 +80,113 @@ def load_churches():
                     "historicalContext": row["Key Historical Context"].strip(),
                 }
             )
-    return churches
+    return locations
+
+
+def load_churches():
+    return load_historical_locations(
+        "venetian_churches.csv", "churches", "venetian-church"
+    )
+
+
+def load_confraternities():
+    return load_historical_locations(
+        "venetian_confraternities_guilds.csv",
+        "confraternities and guilds",
+        "venetian-confraternity",
+    )
+
+
+def load_doges():
+    return load_historical_locations(
+        "venetian_doges_dynasties.csv", "doges and dynasties", "venetian-doge"
+    )
+
+
+def load_inscriptions():
+    required_fields = (
+        "Location Name",
+        "Island",
+        "Sestiere / District",
+        "Specific Location / Address",
+        "Latitude",
+        "Longitude",
+        "Year Built / Founded",
+        "Description & Significance",
+        "Key Historical Context",
+        "Artifact Category",
+        "Type of Inscription",
+        "Scale of Damage (1-5)",
+        "Condition Notes",
+        "Original Inscription Text",
+        "English Translation",
+        "Italian Translation",
+        "Thematic Classification",
+        "Survey ObjectID",
+        "GlobalID",
+        "Lapidi ID",
+    )
+    inscriptions = []
+    with (DATA_DIR / "venetian_inscriptions.csv").open(
+        encoding="utf-8-sig", newline=""
+    ) as data_file:
+        reader = csv.DictReader(data_file)
+        if reader.fieldnames is None or any(
+            field not in reader.fieldnames for field in required_fields
+        ):
+            raise ValueError(
+                "The Venetian inscriptions dataset is missing required columns."
+            )
+        for index, row in enumerate(reader, start=1):
+            try:
+                latitude = float(row["Latitude"])
+                longitude = float(row["Longitude"])
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"The Venetian inscriptions dataset has invalid coordinates on row {index}."
+                ) from error
+            if (
+                not math.isfinite(latitude)
+                or not math.isfinite(longitude)
+                or not -90 <= latitude <= 90
+                or not -180 <= longitude <= 180
+            ):
+                raise ValueError(
+                    f"The Venetian inscriptions dataset has invalid coordinates on row {index}."
+                )
+            inscriptions.append(
+                {
+                    "id": f"venetian-inscription-{index:04}",
+                    "name": row["Location Name"].strip(),
+                    "island": row["Island"].strip(),
+                    "district": row["Sestiere / District"].strip(),
+                    "address": row["Specific Location / Address"].strip(),
+                    "lat": latitude,
+                    "lng": longitude,
+                    "yearFounded": row["Year Built / Founded"].strip(),
+                    "description": row["Description & Significance"].strip(),
+                    "historicalContext": row["Key Historical Context"].strip(),
+                    "artifactCategory": row["Artifact Category"].strip(),
+                    "inscriptionType": row["Type of Inscription"].strip(),
+                    "damageScale": row["Scale of Damage (1-5)"].strip(),
+                    "conditionNotes": row["Condition Notes"].strip(),
+                    "originalText": row["Original Inscription Text"].strip(),
+                    "englishTranslation": row["English Translation"].strip(),
+                    "italianTranslation": row["Italian Translation"].strip(),
+                    "thematicClassification": row["Thematic Classification"].strip(),
+                    "surveyObjectId": row["Survey ObjectID"].strip(),
+                    "globalId": row["GlobalID"].strip(),
+                    "lapidiId": row["Lapidi ID"].strip(),
+                }
+            )
+    return inscriptions
 
 
 def build_route(stop_ids, accessible_only=False):
     sites = load_records("sites.json")
     sites_by_id = {site["id"]: site for site in sites}
-    if not isinstance(stop_ids, list) or not 4 <= len(stop_ids) <= 5:
-        raise ValueError("Select 4 or 5 landmarks for your walking route.")
+    if not isinstance(stop_ids, list) or not 1 <= len(stop_ids) <= 5:
+        raise ValueError("Select between 1 and 5 landmarks for your walking route.")
     if any(not isinstance(site_id, str) or site_id not in sites_by_id for site_id in stop_ids):
         raise ValueError("Choose valid landmarks from the current site list.")
     if len(set(stop_ids)) != len(stop_ids):
@@ -128,14 +227,44 @@ def decode_polyline(encoded, precision=6):
     return coordinates
 
 
-def get_walkable_route(stop_ids, accessible_only=False):
+def get_walkable_route(stop_ids, accessible_only=False, start_location=None):
     build_route(stop_ids, accessible_only)
+    if start_location is not None:
+        if not isinstance(start_location, dict):
+            raise ValueError("The route starting location is invalid.")
+        try:
+            latitude = float(start_location.get("lat"))
+            longitude = float(start_location.get("lng"))
+        except (OverflowError, TypeError, ValueError) as error:
+            raise ValueError(
+                "The route starting location has invalid coordinates."
+            ) from error
+        if (
+            isinstance(start_location.get("lat"), bool)
+            or isinstance(start_location.get("lng"), bool)
+            or not math.isfinite(latitude)
+            or not math.isfinite(longitude)
+            or not -90 <= latitude <= 90
+            or not -180 <= longitude <= 180
+        ):
+            raise ValueError("The route starting location has invalid coordinates.")
+        start_location = {"lat": latitude, "lng": longitude}
+    elif len(stop_ids) == 1:
+        raise ValueError(
+            "A single-stop route needs a starting location. Enable “Start from my current location”."
+        )
+
     sites_by_id = {site["id"]: site for site in load_records("sites.json")}
     route_sites = [sites_by_id[site_id] for site_id in stop_ids]
+    route_points = (
+        [{"lat": start_location["lat"], "lng": start_location["lng"]}]
+        if start_location is not None
+        else []
+    ) + route_sites
     payload = {
         "locations": [
-            {"lat": site["lat"], "lon": site["lng"], "radius": 100}
-            for site in route_sites
+            {"lat": point["lat"], "lon": point["lng"], "radius": 100}
+            for point in route_points
         ],
         "costing": "pedestrian",
         "costing_options": {"pedestrian": {"use_ferry": 0}},
@@ -180,9 +309,9 @@ def get_walkable_route(stop_ids, accessible_only=False):
     if not isinstance(trip, dict):
         raise RuntimeError("The pedestrian routing service returned an invalid response.")
     legs = trip.get("legs", [])
-    if not isinstance(legs, list) or len(legs) != len(route_sites) - 1:
+    if not isinstance(legs, list) or len(legs) != len(route_points) - 1:
         raise RuntimeError(
-            "A walkable path could not be found between every selected landmark. "
+            "A walkable path could not be found from the starting location through every selected landmark. "
             "Try a different stop or turn off the step-free filter."
         )
     trip_summary = trip.get("summary", {})
@@ -226,10 +355,13 @@ def get_walkable_route(stop_ids, accessible_only=False):
             for maneuver in maneuvers
             if isinstance(maneuver, dict) and isinstance(maneuver.get("instruction"), str)
         ]
+        from_site = route_points[index]
+        to_site = route_points[index + 1]
         route_legs.append(
             {
-                "fromId": route_sites[index]["id"],
-                "toId": route_sites[index + 1]["id"],
+                "fromId": from_site.get("id", "current-location"),
+                "fromName": from_site.get("name", "Your location"),
+                "toId": to_site["id"],
                 "geometry": geometry,
                 "distanceKm": distance_km,
                 "durationMinutes": math.ceil(duration_seconds / 60),
@@ -250,6 +382,7 @@ def get_walkable_route(stop_ids, accessible_only=False):
         "legs": route_legs,
         "distanceKm": distance_km,
         "durationMinutes": math.ceil(duration_seconds / 60),
+        "startedFromCurrentLocation": start_location is not None,
         "routingProvider": "OpenStreetMap pedestrian network via Valhalla",
     }
 
@@ -277,6 +410,12 @@ class VeniceRequestHandler(SimpleHTTPRequestHandler):
             return self.send_json(load_records("fountains.json"))
         if path == "/api/churches":
             return self.send_json(load_churches())
+        if path == "/api/confraternities":
+            return self.send_json(load_confraternities())
+        if path == "/api/doges":
+            return self.send_json(load_doges())
+        if path == "/api/inscriptions":
+            return self.send_json(load_inscriptions())
         if path == "/api/geojson":
             sites = load_records("sites.json")
             return self.send_json(
@@ -320,9 +459,16 @@ class VeniceRequestHandler(SimpleHTTPRequestHandler):
                 return self.send_json({"error": "Route request must be a JSON object."}, 400)
             stop_ids = request.get("stopIds")
             accessible_only = request.get("accessibleOnly", False)
-            if not isinstance(stop_ids, list) or not isinstance(accessible_only, bool):
+            start_location = request.get("startLocation")
+            if (
+                not isinstance(stop_ids, list)
+                or not isinstance(accessible_only, bool)
+                or ("startLocation" in request and not isinstance(start_location, dict))
+            ):
                 return self.send_json({"error": "Invalid route request."}, 400)
-            return self.send_json(get_walkable_route(stop_ids, accessible_only))
+            return self.send_json(
+                get_walkable_route(stop_ids, accessible_only, start_location)
+            )
         except (json.JSONDecodeError, UnicodeDecodeError):
             return self.send_json({"error": "Request body must contain valid JSON."}, 400)
         except ValueError as error:

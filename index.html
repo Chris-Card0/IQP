@@ -71,6 +71,9 @@
     let VENICE_SITES = [];
     let DRINKING_FOUNTAINS = [];
     let VENETIAN_CHURCHES = [];
+    let VENETIAN_CONFRATERNITIES = [];
+    let VENETIAN_DOGES = [];
+    let VENETIAN_INSCRIPTIONS = [];
 
     const PRESET_ROUTES = [
       { id: 'palaces', title: "Aristocratic Palaces to Public Museums", duration: "Santa Croce & Dorsoduro walk", stops: ['ca-pesaro', 'natural-history-fondaco', 'scuola-san-giovanni', 'ca-rezzonico', 'peggy-guggenheim'], tags: ["Adaptive Reuse", "Politics & Republic"] },
@@ -95,8 +98,16 @@
       const [selectedStopIds, setSelectedStopIds] = useState(['st-marks-basilica', 'calle-dei-fuseri', 'rialto-bridge', 'ca-rezzonico', 'peggy-guggenheim']);
       const [selectedTags, setSelectedTags] = useState(['Adaptive Reuse', 'Bubonic Plague', 'Guilds & Glass']);
       const [includeChurches, setIncludeChurches] = useState(false);
+      const [includeConfraternities, setIncludeConfraternities] = useState(false);
+      const [includeDoges, setIncludeDoges] = useState(false);
+      const [includeInscriptions, setIncludeInscriptions] = useState(false);
       const [showAllChurches, setShowAllChurches] = useState(false);
+      const [showAllConfraternities, setShowAllConfraternities] = useState(false);
+      const [showAllDoges, setShowAllDoges] = useState(false);
+      const [showAllInscriptions, setShowAllInscriptions] = useState(false);
       const [accessibleOnly, setAccessibleOnly] = useState(false);
+      const [routeStartFromLocation, setRouteStartFromLocation] = useState(false);
+      const [routeStartLocation, setRouteStartLocation] = useState(null);
       const [activeRouteIds, setActiveRouteIds] = useState([]);
       const [routeLegs, setRouteLegs] = useState([]);
       const [routeSummary, setRouteSummary] = useState(null);
@@ -109,6 +120,7 @@
       const [showSubmergedProtected, setShowSubmergedProtected] = useState(true);
       const [selectedSite, setSelectedSite] = useState(null);
       const [selectedChurch, setSelectedChurch] = useState(null);
+      const [selectedResearchLocation, setSelectedResearchLocation] = useState(null);
       const [showGoogleEmbedModal, setShowGoogleEmbedModal] = useState(false);
       const [highContrast, setHighContrast] = useState(false);
 
@@ -207,18 +219,35 @@
           fetch('/api/churches').then(async (response) => {
             if (!response.ok) throw new Error(`Church data request failed (${response.status}).`);
             return response.json();
+          }),
+          fetch('/api/confraternities').then(async (response) => {
+            if (!response.ok) throw new Error(`Confraternity data request failed (${response.status}).`);
+            return response.json();
+          }),
+          fetch('/api/doges').then(async (response) => {
+            if (!response.ok) throw new Error(`Doge and dynasty data request failed (${response.status}).`);
+            return response.json();
+          }),
+          fetch('/api/inscriptions').then(async (response) => {
+            if (!response.ok) throw new Error(`Inscription data request failed (${response.status}).`);
+            return response.json();
           })
-        ]).then(([sites, fountains, churches]) => {
+        ]).then(([sites, fountains, churches, confraternities, doges, inscriptions]) => {
           if (!Array.isArray(sites) || !Array.isArray(fountains) || !Array.isArray(churches)
-            || sites.length === 0 || churches.length === 0) {
+            || !Array.isArray(confraternities) || !Array.isArray(doges) || !Array.isArray(inscriptions)
+            || sites.length === 0 || churches.length === 0 || confraternities.length === 0
+            || doges.length === 0 || inscriptions.length === 0) {
             throw new Error("The server returned an invalid or empty Venice dataset.");
           }
           if (cancelled) return;
           VENICE_SITES = sites;
           DRINKING_FOUNTAINS = fountains;
           VENETIAN_CHURCHES = churches;
+          VENETIAN_CONFRATERNITIES = confraternities;
+          VENETIAN_DOGES = doges;
+          VENETIAN_INSCRIPTIONS = inscriptions;
           setSelectedSite(sites[0]);
-          setMapStatusText(`${sites.length} landmarks, ${churches.length} churches & ${fountains.length} fountains`);
+          setMapStatusText(`${sites.length} landmarks, ${churches.length} churches, ${confraternities.length} confraternities & guilds, ${doges.length} doge locations, ${inscriptions.length} inscriptions & street altars, ${fountains.length} fountains`);
           setDataReady(true);
           setDataLoadError('');
         }).catch((error) => {
@@ -283,19 +312,45 @@
             .filter((church) => church.distanceMeters <= scanRadiusMeters)
             .sort((a, b) => a.distanceMeters - b.distanceMeters)
           : [];
+        const getNearbyLocations = (locations, enabled) => enabled
+            ? locations
+              .map((location) => ({ ...location, distanceMeters: getDistanceMeters(userGpsPos.lat, userGpsPos.lng, location.lat, location.lng) }))
+              .filter((location) => location.distanceMeters <= scanRadiusMeters)
+              .sort((a, b) => a.distanceMeters - b.distanceMeters)
+            : [];
+        const confraternities = getNearbyLocations(VENETIAN_CONFRATERNITIES, includeConfraternities);
+        const doges = getNearbyLocations(VENETIAN_DOGES, includeDoges);
+        const inscriptions = getNearbyLocations(VENETIAN_INSCRIPTIONS, includeInscriptions);
         const fountains = DRINKING_FOUNTAINS.map((f) => ({ ...f, distanceMeters: getDistanceMeters(userGpsPos.lat, userGpsPos.lng, f.lat, f.lng) })).filter((f) => f.distanceMeters <= scanRadiusMeters).sort((a, b) => a.distanceMeters - b.distanceMeters);
-        return { sites, churches, fountains };
-      }, [userGpsPos, scanRadiusMeters, activeRouteIds, selectedTags, includeChurches]);
+        return { sites, churches, confraternities, doges, inscriptions, fountains };
+      }, [userGpsPos, scanRadiusMeters, activeRouteIds, selectedTags, includeChurches, includeConfraternities, includeDoges, includeInscriptions]);
       const closestPreferredArtifact = nearbyFeatures.sites.find((site) => site.distanceMeters <= scanRadiusMeters);
       const closestPreferredChurch = nearbyFeatures.churches[0];
+      const closestPreferredInscription = nearbyFeatures.inscriptions[0];
+      const selectResearchLocation = (location, collectionLabel) => {
+        setSelectedChurch(collectionLabel === 'Venetian Church' ? location : null);
+        setSelectedResearchLocation({ ...location, collectionLabel });
+        leafletMapRef.current?.setView([location.lat, location.lng], 16);
+      };
+      const selectSite = (site) => {
+        setSelectedResearchLocation(null);
+        setSelectedChurch(null);
+        setSelectedSite(site);
+      };
 
       const googleMapsRouteUrl = useMemo(() => {
         if (activeRouteSites.length === 0) return 'https://www.google.com/maps/place/Venice,+Italy';
-        const origin = `${activeRouteSites[0].lat},${activeRouteSites[0].lng}`;
+        const startsFromCurrentLocation = routeStartFromLocation && routeStartLocation;
+        const origin = startsFromCurrentLocation
+          ? `${routeStartLocation.lat},${routeStartLocation.lng}`
+          : `${activeRouteSites[0].lat},${activeRouteSites[0].lng}`;
         const dest = `${activeRouteSites[activeRouteSites.length - 1].lat},${activeRouteSites[activeRouteSites.length - 1].lng}`;
-        const wps = activeRouteSites.slice(1, -1).map((s) => `${s.lat},${s.lng}`).join('|');
+        const waypoints = startsFromCurrentLocation
+          ? activeRouteSites.slice(0, -1)
+          : activeRouteSites.slice(1, -1);
+        const wps = waypoints.map((s) => `${s.lat},${s.lng}`).join('|');
         return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(dest)}${wps ? `&waypoints=${encodeURIComponent(wps)}` : ''}&travelmode=walking`;
-      }, [activeRouteSites]);
+      }, [activeRouteSites, routeStartFromLocation, routeStartLocation]);
 
       // Initialize Leaflet with public basemap providers.
       useEffect(() => {
@@ -341,7 +396,7 @@
           VENICE_SITES.filter((s) => s.type === 'submerged').forEach((zone) => {
             const c = L.circle([zone.lat, zone.lng], { radius: 300, color: '#F59E0B', weight: 2, dashArray: '6, 6', fillColor: '#F59E0B', fillOpacity: 0.25 }).addTo(group);
             c.bindTooltip(`<strong>🔒 ${zone.name}</strong><br/>300m Anti-Looting Buffer`);
-            c.on('click', () => setSelectedSite(zone));
+            c.on('click', () => selectSite(zone));
           });
         }
 
@@ -352,31 +407,57 @@
               html: `<div style="width:22px;height:22px;border-radius:50%;background:#0284C7;border:2px solid #FFF;display:flex;align-items:center;justify-content:center;color:white;font-size:11px;box-shadow:0 2px 5px rgba(0,0,0,0.4);">💧</div>`,
               iconSize: [22, 22], iconAnchor: [11, 11]
             });
-            L.marker([f.lat, f.lng], { icon }).addTo(group).bindPopup(`<strong>${f.name}</strong><br/>${f.status}<br/><small>${f.veraNote}</small>`);
+            const marker = L.marker([f.lat, f.lng], { icon }).addTo(group);
+            marker.bindPopup(`<strong>${f.name}</strong><br/>${f.status}<br/><small>${f.veraNote}</small>`);
+            marker.on('click', () => {
+              selectResearchLocation({
+                ...f,
+                district: 'Venice',
+                island: 'Main Island',
+                yearFounded: '',
+                description: f.status,
+                historicalContext: f.veraNote
+              }, 'Drinking Fountain');
+            });
           });
         }
 
-        const nearbyChurchIds = new Set(nearbyFeatures.churches.map((church) => church.id));
-        const visibleChurches = showAllChurches
-          ? VENETIAN_CHURCHES
-          : VENETIAN_CHURCHES.filter((church) => nearbyChurchIds.has(church.id) || selectedChurch?.id === church.id);
-        visibleChurches.forEach((church) => {
-          const isSelected = selectedChurch?.id === church.id;
-          const icon = L.divIcon({
-            className: '',
-            html: `<div style="width:${isSelected ? 30 : 24}px;height:${isSelected ? 30 : 24}px;border-radius:50%;background:#7C3AED;border:2px solid #FFF;display:flex;align-items:center;justify-content:center;color:white;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,0.45);">✝</div>`,
-            iconSize: [30, 30], iconAnchor: [15, 15]
+        const historicalLocationLayers = [
+          { locations: VENETIAN_CHURCHES, nearby: nearbyFeatures.churches, showAll: showAllChurches, selectedId: selectedChurch?.id, label: 'Venetian Church', color: '#7C3AED', glyph: '✝' },
+          { locations: VENETIAN_CONFRATERNITIES, nearby: nearbyFeatures.confraternities, showAll: showAllConfraternities, selectedId: selectedResearchLocation?.collectionLabel === 'Confraternity or Guild' ? selectedResearchLocation.id : null, label: 'Confraternity or Guild', color: '#B45309', glyph: '⚒' },
+          { locations: VENETIAN_DOGES, nearby: nearbyFeatures.doges, showAll: showAllDoges, selectedId: selectedResearchLocation?.collectionLabel === 'Doge or Dynasty Location' ? selectedResearchLocation.id : null, label: 'Doge or Dynasty Location', color: '#0369A1', glyph: '♛' },
+          { locations: VENETIAN_INSCRIPTIONS, nearby: nearbyFeatures.inscriptions, showAll: showAllInscriptions, selectedId: selectedResearchLocation?.collectionLabel === 'Inscription or Street Altar' ? selectedResearchLocation.id : null, label: 'Inscription or Street Altar', color: '#0F766E', glyph: '✎' }
+        ];
+        historicalLocationLayers.forEach((layer) => {
+          const nearbyIds = new Set(layer.nearby.map((location) => location.id));
+          const visibleLocations = layer.showAll
+            ? layer.locations
+            : layer.locations.filter((location) => nearbyIds.has(location.id) || layer.selectedId === location.id);
+          visibleLocations.forEach((location) => {
+            const isSelected = layer.selectedId === location.id;
+            const icon = L.divIcon({
+              className: '',
+              html: `<div style="width:${isSelected ? 30 : 24}px;height:${isSelected ? 30 : 24}px;border-radius:50%;background:${layer.color};border:2px solid #FFF;display:flex;align-items:center;justify-content:center;color:white;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,0.45);">${layer.glyph}</div>`,
+              iconSize: [30, 30], iconAnchor: [15, 15]
+            });
+            const marker = L.marker([location.lat, location.lng], { icon }).addTo(group);
+            const popup = document.createElement('div');
+            const title = document.createElement('strong');
+            title.textContent = location.name;
+            const address = document.createElement('p');
+            address.textContent = `${location.district} · ${location.address}`;
+            popup.append(title, address);
+            if (location.artifactCategory) {
+              const category = document.createElement('p');
+              category.textContent = `${location.artifactCategory}${location.inscriptionType ? ` · ${location.inscriptionType}` : ''}`;
+              popup.append(category);
+            }
+            marker.bindPopup(popup);
+            marker.on('click', () => {
+              selectResearchLocation(location, layer.label);
+            });
+            if (isSelected) marker.openPopup();
           });
-          const marker = L.marker([church.lat, church.lng], { icon }).addTo(group);
-          const popup = document.createElement('div');
-          const title = document.createElement('strong');
-          title.textContent = church.name;
-          const location = document.createElement('p');
-          location.textContent = `${church.district} · ${church.address}`;
-          popup.append(title, location);
-          marker.bindPopup(popup);
-          marker.on('click', () => setSelectedChurch(church));
-          if (isSelected) marker.openPopup();
         });
 
         if (activeMode === 'street-wander') {
@@ -396,6 +477,16 @@
           }
         }
 
+        if (routeStartFromLocation && routeStartLocation && activeRouteIds.length > 0) {
+          L.circleMarker([routeStartLocation.lat, routeStartLocation.lng], {
+            radius: 8,
+            color: '#FFFFFF',
+            weight: 2,
+            fillColor: '#10B981',
+            fillOpacity: 1
+          }).bindTooltip('Your route starts here').addTo(group);
+        }
+
         VENICE_SITES.filter((s) => s.type !== 'submerged').forEach((site) => {
           const isSel = selectedSite?.id === site.id;
           const rIdx = activeRouteIds.indexOf(site.id);
@@ -412,15 +503,22 @@
           });
           const m = L.marker([site.lat, site.lng], { icon: sIcon }).addTo(group);
           m.bindTooltip(`<strong>${site.name}</strong> (${site.sestiere})`);
-          m.on('click', () => setSelectedSite(site));
+          m.on('click', () => selectSite(site));
         });
-      }, [activeRouteSites, routeLegs, activeRouteIds, selectedSite, selectedChurch, showFountains, showSubmergedProtected, showAllChurches, nearbyFeatures.churches, activeMode, userGpsPos, scanRadiusMeters, selectedTags, isDemoLocation, dataReady]);
+      }, [activeRouteSites, routeLegs, activeRouteIds, selectedSite, selectedChurch, selectedResearchLocation, showFountains, showSubmergedProtected, showAllChurches, showAllConfraternities, showAllDoges, showAllInscriptions, nearbyFeatures, activeMode, userGpsPos, routeStartFromLocation, routeStartLocation, scanRadiusMeters, selectedTags, isDemoLocation, dataReady]);
 
       useEffect(() => {
         if (leafletMapRef.current && selectedSite) {
+          setSelectedResearchLocation(null);
           leafletMapRef.current.panTo([selectedSite.lat, selectedSite.lng], { animate: true });
         }
       }, [selectedSite]);
+
+      useEffect(() => {
+        if (leafletMapRef.current && selectedResearchLocation) {
+          leafletMapRef.current.panTo([selectedResearchLocation.lat, selectedResearchLocation.lng], { animate: true });
+        }
+      }, [selectedResearchLocation]);
 
       useEffect(() => {
         if (!leafletMapRef.current || !window.L || routeLegs.length === 0) return;
@@ -437,16 +535,39 @@
         setAudioProgress(0);
       };
 
-      const handleToggleAudioSpeech = () => {
-        if (!selectedSite) return;
+      const getSiteNarration = (site) => `${site.name}, in ${site.sestiere}. Constructed in ${site.dateConstructed}. ${site.narrativeScript} Historical context: ${site.historicalContext} Fun fact: ${site.funFactlet} Tassini note: ${site.tassiniNote}`;
+      const getResearchLocationNarration = (location) => [
+        `${location.name}.`,
+        location.district && `Located in ${location.district}.`,
+        location.yearFounded && `Founded or built: ${location.yearFounded}.`,
+        location.artifactCategory && `Artifact category: ${location.artifactCategory}.`,
+        location.inscriptionType && `Inscription type: ${location.inscriptionType}.`,
+        location.thematicClassification && `Theme: ${location.thematicClassification}.`,
+        location.description,
+        location.historicalContext && !location.artifactCategory
+          && `Historical context: ${location.historicalContext}`,
+        location.originalText && `Original inscription: ${location.originalText}`,
+        location.englishTranslation && `English translation: ${location.englishTranslation}`,
+        location.italianTranslation && `Italian translation: ${location.italianTranslation}`,
+        location.conditionNotes && `Condition: ${location.conditionNotes}`,
+        location.damageScale && `Scale of damage: ${location.damageScale} out of 5.`
+      ].filter(Boolean).join(' ');
+
+      const handleToggleAudioSpeech = (text) => {
         if (isPlayingAudio) { stopAudioSpeech(); return; }
-        const text = `${selectedSite.name}, in ${selectedSite.sestiere}. Constructed in ${selectedSite.dateConstructed}. ${selectedSite.narrativeScript} Historical context: ${selectedSite.historicalContext} Fun fact: ${selectedSite.funFactlet} Tassini note: ${selectedSite.tassiniNote}`;
+        if (!text.trim()) return;
         if ('speechSynthesis' in window) {
           window.speechSynthesis.cancel();
           const u = new SpeechSynthesisUtterance(text);
           u.lang = 'en-US';
           u.onboundary = (e) => { if (e.charIndex) setAudioProgress(Math.min(100, Math.round((e.charIndex / text.length) * 100))); };
           u.onend = () => { setIsPlayingAudio(false); setAudioProgress(100); };
+          u.onerror = (event) => {
+            setIsPlayingAudio(false);
+            if (event.error !== 'canceled' && event.error !== 'interrupted') {
+              setMapStatusText(`Text-to-speech failed: ${event.error}`);
+            }
+          };
           setIsPlayingAudio(true);
           setAudioProgress(10);
           window.speechSynthesis.speak(u);
@@ -455,26 +576,64 @@
         }
       };
 
-      useEffect(() => { stopAudioSpeech(); }, [selectedSite]);
+      useEffect(() => { stopAudioSpeech(); }, [selectedSite, selectedResearchLocation]);
 
-      const requestWalkingRoute = async (stopIds) => {
+      const renderAudioPlayer = (label, text) => (
+        <div className="mt-2.5 p-2 rounded-xl bg-[#091D24] border border-slate-700 flex items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => handleToggleAudioSpeech(text)}
+            aria-label={isPlayingAudio ? 'Stop narration' : `Listen to ${label}`}
+            aria-pressed={isPlayingAudio}
+            className="w-8 h-8 rounded-lg bg-[#D4AF37] text-[#0F2C36] font-bold flex items-center justify-center flex-shrink-0"
+          >
+            {isPlayingAudio ? '⏸' : '▶'}
+          </button>
+          <div className="flex-1 min-w-0">
+            <div className="flex justify-between text-[11px] mb-1">
+              <span className="font-semibold text-[#D4AF37]">{isPlayingAudio ? 'Speaking...' : `Listen to ${label}`}</span>
+              <span className="text-slate-400">{audioProgress}%</span>
+            </div>
+            <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+              <div className="h-full bg-[#D4AF37] transition-all" style={{ width: `${audioProgress}%` }} />
+            </div>
+          </div>
+        </div>
+      );
+
+      const requestWalkingRoute = async (
+        stopIds,
+        startLocation = routeStartFromLocation ? routeStartLocation : null
+      ) => {
+        if (stopIds.length === 1 && !startLocation) {
+          setMapStatusText("A one-stop route needs a starting location. Enable “Start from my current location”.");
+          return;
+        }
         const requestId = ++routeRequestIdRef.current;
         setIsBuildingRoute(true);
         setRouteLegs([]);
         setRouteSummary(null);
         setActiveRouteIds([]);
-        setMapStatusText("Finding connected walking paths...");
+        setMapStatusText(startLocation
+          ? "Finding a walking route from your current location..."
+          : "Finding connected walking paths...");
         try {
           const response = await fetch('/api/routes', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ stopIds, accessibleOnly })
+            body: JSON.stringify({
+              stopIds,
+              accessibleOnly,
+              ...(startLocation ? { startLocation: { lat: startLocation.lat, lng: startLocation.lng } } : {})
+            })
           });
           const result = await response.json();
           if (requestId !== routeRequestIdRef.current) return;
           if (!response.ok) throw new Error(result.error || `Route request failed (${response.status}).`);
           if (!Array.isArray(result.route) || result.route.length !== stopIds.length
-            || !Array.isArray(result.legs) || result.legs.length !== stopIds.length - 1) {
+            || !Array.isArray(result.legs)
+            || result.legs.length !== stopIds.length - 1 + (startLocation ? 1 : 0)
+            || result.startedFromCurrentLocation !== Boolean(startLocation)) {
             throw new Error("The routing service returned an incomplete walking route.");
           }
           const routeSites = result.route.map((id) => VENICE_SITES.find((site) => site.id === id));
@@ -485,6 +644,7 @@
           if (result.legs.some((leg) => !Array.isArray(leg.geometry) || leg.geometry.length < 2
             || leg.geometry.some((point) => !Array.isArray(point) || point.length !== 2
               || !point.every((coordinate) => Number.isFinite(coordinate)))
+            || typeof leg.fromName !== 'string'
             || !Number.isFinite(Number(leg.distanceKm)) || !Number.isFinite(Number(leg.durationMinutes))
             || !Array.isArray(leg.instructions))) {
             throw new Error("The routing service returned an incomplete walking path.");
@@ -497,8 +657,8 @@
           setActiveRouteIds(result.route);
           setRouteLegs(result.legs);
           setRouteSummary({ distanceKm, durationMinutes });
-          setSelectedSite(routeSites[0]);
-          setMapStatusText(`${result.routingProvider}: ${distanceKm.toFixed(2)} km, about ${durationMinutes} min`);
+          selectSite(routeSites[0]);
+          setMapStatusText(`${startLocation ? 'From your current location • ' : ''}${result.routingProvider}: ${distanceKm.toFixed(2)} km, about ${durationMinutes} min`);
         } catch (error) {
           if (requestId === routeRequestIdRef.current) {
             setMapStatusText(error.message || "Could not build the route. Please try again.");
@@ -509,6 +669,44 @@
       };
 
       const handleBuildStoryRoute = () => requestWalkingRoute(selectedStopIds);
+
+      const handleRouteStartLocationChange = (event) => {
+        if (!event.target.checked) {
+          setRouteStartFromLocation(false);
+          setRouteStartLocation(null);
+          clearActiveRoute();
+          setMapStatusText("Route start reset to the first selected landmark.");
+          return;
+        }
+        if (!navigator.geolocation) {
+          setMapStatusText("Location is unavailable in this browser; use Near Me (GPS) to set a location.");
+          return;
+        }
+        setMapStatusText("Getting your current location for the route...");
+        navigator.geolocation.getCurrentPosition(
+          ({ coords }) => {
+            const location = {
+              lat: coords.latitude,
+              lng: coords.longitude,
+              label: "Your location"
+            };
+            setRouteStartLocation(location);
+            setUserGpsPos(location);
+            setRouteStartFromLocation(true);
+            clearActiveRoute();
+            setMapStatusText("Current location acquired. Build a route to start there.");
+          },
+          (error) => {
+            const message = error.code === error.PERMISSION_DENIED
+              ? "Location permission was denied. Allow location access and try again."
+              : error.code === error.TIMEOUT
+                ? "Getting your location timed out. Try again."
+                : "Could not get your location. Check device location settings.";
+            setMapStatusText(message);
+          },
+          { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+        );
+      };
 
       useEffect(() => {
         if (dataReady) requestWalkingRoute(selectedStopIds);
@@ -578,7 +776,7 @@
         setUserGpsPos({ lat: step.lat, lng: step.lng, label: step.label });
         setProximityAlert(step);
         const m = VENICE_SITES.find((s) => s.id === step.siteId);
-        if (m) setSelectedSite(m);
+        if (m) selectSite(m);
       };
 
       const handleExportGeoJSON = async () => {
@@ -709,7 +907,7 @@
                   <div className="route-hero p-4 rounded-xl bg-[#0F2C36] text-white border border-[#D4AF37]/30 reveal-on-scroll">
                     <div className="hero-badge-small"><span className="hero-badge-dot" />WPI VENICE PROJECT CENTER</div>
                     <h2 className="route-hero-title">Choose Your Walking Stops</h2>
-                    <p className="text-xs text-slate-200">Pick the 4–5 landmarks you want to visit. Only the landmarks you choose become route stops.</p>
+                    <p className="text-xs text-slate-200">Choose 1–5 landmarks. Routes can begin at the first landmark or at your current location.</p>
                     <div className="route-metrics">
                       <div className="metric-card">
                         <Icon name="distance" size={16} />
@@ -732,7 +930,7 @@
                   <div className="landmark-list space-y-1 reveal-on-scroll">
                     <div className="flex justify-between items-center">
                       <h3 className="text-xs font-bold uppercase">Available Landmarks</h3>
-                      <span className={`text-[10px] font-bold ${selectedStopIds.length >= 4 && selectedStopIds.length <= 5 ? 'text-emerald-700' : 'text-[#B84A39]'}`}>{selectedStopIds.length} / 4–5 selected</span>
+                      <span className={`text-[10px] font-bold ${selectedStopIds.length >= 1 && selectedStopIds.length <= 5 ? 'text-emerald-700' : 'text-[#B84A39]'}`}>{selectedStopIds.length} / 5 selected</span>
                     </div>
                     {VENICE_SITES.filter((site) => site.type !== 'submerged').map((site) => {
                       const isSelected = selectedStopIds.includes(site.id);
@@ -778,6 +976,22 @@
                     />
                   </label>
 
+                  <label className="flex items-center justify-between gap-2 p-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 cursor-pointer text-xs font-semibold">
+                    <span>📍 Start from my current location</span>
+                    <input
+                      type="checkbox"
+                      checked={routeStartFromLocation}
+                      onChange={handleRouteStartLocationChange}
+                      aria-label="Start route from my current location"
+                      className="accent-emerald-700"
+                    />
+                  </label>
+                  {routeStartFromLocation && routeStartLocation && (
+                    <p className="px-2 text-[10px] text-slate-600">
+                      Route origin: {routeStartLocation.lat.toFixed(5)}, {routeStartLocation.lng.toFixed(5)}. Your coordinates are sent to the routing service to calculate the walk.
+                    </p>
+                  )}
+
                   <div>
                     <h3 className="text-[10px] font-bold uppercase opacity-75 mb-1">Walking Preferences — Nearby Finds</h3>
                     <p className="text-[10px] opacity-75 mb-2">These interests do not add route stops. While you walk, matching artifacts outside your chosen route appear when they are nearby.</p>
@@ -789,6 +1003,36 @@
                         onChange={(event) => setIncludeChurches(event.target.checked)}
                         aria-label="Show nearby Venetian churches while walking"
                         className="accent-violet-700"
+                      />
+                    </label>
+                    <label className="mb-2 flex items-center justify-between gap-2 p-2 rounded-lg border border-amber-500/30 bg-amber-500/5 cursor-pointer text-xs font-semibold">
+                      <span>⚒ Confraternities & Guilds</span>
+                      <input
+                        type="checkbox"
+                        checked={includeConfraternities}
+                        onChange={(event) => setIncludeConfraternities(event.target.checked)}
+                        aria-label="Show nearby confraternities and guilds while walking"
+                        className="accent-amber-700"
+                      />
+                    </label>
+                    <label className="mb-2 flex items-center justify-between gap-2 p-2 rounded-lg border border-sky-500/30 bg-sky-500/5 cursor-pointer text-xs font-semibold">
+                      <span>♛ Doges & Dynasties</span>
+                      <input
+                        type="checkbox"
+                        checked={includeDoges}
+                        onChange={(event) => setIncludeDoges(event.target.checked)}
+                        aria-label="Show nearby doge and dynasty locations while walking"
+                        className="accent-sky-700"
+                      />
+                    </label>
+                    <label className="mb-2 flex items-center justify-between gap-2 p-2 rounded-lg border border-teal-500/30 bg-teal-500/5 cursor-pointer text-xs font-semibold">
+                      <span>✎ Inscriptions & Street Altars</span>
+                      <input
+                        type="checkbox"
+                        checked={includeInscriptions}
+                        onChange={(event) => setIncludeInscriptions(event.target.checked)}
+                        aria-label="Show nearby inscriptions and street altars while walking"
+                        className="accent-teal-700"
                       />
                     </label>
                   <div className="flex flex-wrap gap-1">
@@ -807,17 +1051,20 @@
                   </div>
                   </div>
 
-                  <button disabled={isBuildingRoute || selectedStopIds.length < 4 || selectedStopIds.length > 5} onClick={handleBuildStoryRoute} className="action-button w-full py-2 px-3 rounded-xl bg-[#0F2C36] hover:bg-[#194554] disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-xs shadow border border-[#D4AF37]/40">
+                  {selectedStopIds.length === 1 && (!routeStartFromLocation || !routeStartLocation) && (
+                    <p className="text-[11px] text-[#B84A39]">For a one-stop route, enable “Start from my current location”.</p>
+                  )}
+                  <button disabled={isBuildingRoute || selectedStopIds.length < 1 || selectedStopIds.length > 5 || (selectedStopIds.length === 1 && (!routeStartFromLocation || !routeStartLocation))} onClick={handleBuildStoryRoute} className="action-button w-full py-2 px-3 rounded-xl bg-[#0F2C36] hover:bg-[#194554] disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-xs shadow border border-[#D4AF37]/40">
                     <Icon name="route" size={15} />
                     {isBuildingRoute ? 'Finding walkable paths...' : 'Build Route from My Selected Stops'}
                   </button>
 
                   <div className="pt-2 border-t border-[#E2D9C8] space-y-1.5">
-                    <h3 className="text-xs font-bold uppercase text-[#B84A39]">Active Pathway ({activeRouteSites.length} Stops)</h3>
+                    <h3 className="text-xs font-bold uppercase text-[#B84A39]">Active Pathway ({activeRouteSites.length} {activeRouteSites.length === 1 ? 'Stop' : 'Stops'})</h3>
                     {activeRouteSites.map((site, idx) => (
                       <div
                         key={site.id}
-                        onClick={() => setSelectedSite(site)}
+                        onClick={() => selectSite(site)}
                         className={`p-2 rounded-xl border cursor-pointer flex items-center gap-2 ${selectedSite?.id === site.id ? 'bg-[#0F2C36]/10 border-[#0F2C36]' : 'bg-white border-[#E2D9C8]'}`}
                       >
                         <div className="w-5 h-5 rounded-full bg-[#B84A39] text-white flex items-center justify-center text-[11px] font-bold flex-shrink-0">{idx + 1}</div>
@@ -832,7 +1079,7 @@
                       return (
                         <details key={`${leg.fromId}-${leg.toId}`} className="ml-7 p-2 rounded-lg bg-white border border-[#E2D9C8] text-xs">
                           <summary className="cursor-pointer font-semibold">
-                            Walk to {destination?.name || 'next stop'} • {Number(leg.distanceKm).toFixed(2)} km • {leg.durationMinutes} min
+                            {leg.fromId === 'current-location' ? 'Walk from your location' : 'Walk'} to {destination?.name || 'next stop'} • {Number(leg.distanceKm).toFixed(2)} km • {leg.durationMinutes} min
                           </summary>
                           {leg.instructions.length > 0 ? (
                             <ol className="mt-2 ml-4 list-decimal space-y-1 text-[11px]">
@@ -867,7 +1114,7 @@
                   <div className="p-3 rounded-xl bg-[#0F2C36] text-white border border-[#D4AF37]/40">
                     <div className="flex justify-between items-center mb-1">
                       <span className="text-xs font-bold text-[#D4AF37]">📡 "What's Near Me" GPS Radar</span>
-                      <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">{nearbyFeatures.sites.length + nearbyFeatures.churches.length} matches</span>
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">{nearbyFeatures.sites.length + nearbyFeatures.churches.length + nearbyFeatures.confraternities.length + nearbyFeatures.doges.length + nearbyFeatures.inscriptions.length} matches</span>
                     </div>
                     <label className="mt-2 flex items-center justify-between gap-2 rounded-lg bg-white/10 px-2 py-1.5 text-xs font-semibold cursor-pointer">
                       <span>Demo location — drag the map pin</span>
@@ -923,6 +1170,18 @@
                     </div>
                   )}
 
+                  {closestPreferredInscription && (
+                    <button
+                      type="button"
+                      onClick={() => selectResearchLocation(closestPreferredInscription, 'Inscription or Street Altar')}
+                      className="w-full text-left p-2.5 rounded-xl bg-teal-500/10 border-2 border-teal-400"
+                    >
+                      <span className="text-[10px] font-bold uppercase text-teal-800">Nearby inscription preference match • {closestPreferredInscription.distanceMeters}m</span>
+                      <span className="block font-bold text-xs mt-1">{closestPreferredInscription.name}</span>
+                      <span className="block text-xs opacity-90">{closestPreferredInscription.artifactCategory} · Select to read or listen to the inscription.</span>
+                    </button>
+                  )}
+
                   {proximityAlert && (
                     <div className="p-2.5 rounded-xl bg-amber-500/15 border-2 border-[#D4AF37]">
                       <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-[#B84A39] text-white">GPS Trigger • {proximityAlert.distance}</span>
@@ -934,7 +1193,7 @@
                   <div className="space-y-1">
                     <h4 className="text-xs font-bold uppercase">Preferred Artifacts Within {scanRadiusMeters}m</h4>
                     {nearbyFeatures.sites.map((s) => (
-                      <div key={s.id} onClick={() => setSelectedSite(s)} className="p-2 rounded-lg bg-white text-slate-900 border border-[#E2D9C8] cursor-pointer flex justify-between items-center text-xs">
+                      <div key={s.id} onClick={() => selectSite(s)} className="p-2 rounded-lg bg-white text-slate-900 border border-[#E2D9C8] cursor-pointer flex justify-between items-center text-xs">
                         <span className="font-bold truncate pr-2">{s.name}</span>
                         <span className="px-2 py-0.5 rounded bg-[#0F2C36] text-[#D4AF37] font-bold text-[10px]">{s.distanceMeters}m</span>
                       </div>
@@ -950,10 +1209,7 @@
                       <button
                         key={church.id}
                         type="button"
-                        onClick={() => {
-                          setSelectedChurch(church);
-                          leafletMapRef.current?.setView([church.lat, church.lng], 16);
-                        }}
+                        onClick={() => selectResearchLocation(church, 'Venetian Church')}
                         className="w-full p-2 rounded-lg bg-white text-slate-900 border border-violet-200 cursor-pointer flex justify-between items-center text-xs"
                       >
                         <span className="font-bold truncate pr-2">{church.name}</span>
@@ -965,6 +1221,72 @@
                     )}
                     {!includeChurches && (
                       <p className="p-2 rounded-lg bg-white text-slate-600 border border-[#E2D9C8] text-xs">Choose Venetian Churches in Route Builder preferences to receive nearby church alerts.</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-bold uppercase">Preferred Confraternities & Guilds Within {scanRadiusMeters}m</h4>
+                    {nearbyFeatures.confraternities.map((location) => (
+                      <button
+                        key={location.id}
+                        type="button"
+                        onClick={() => selectResearchLocation(location, 'Confraternity or Guild')}
+                        className="w-full p-2 rounded-lg bg-white text-slate-900 border border-amber-200 cursor-pointer flex justify-between items-center text-xs"
+                      >
+                        <span className="font-bold truncate pr-2">{location.name}</span>
+                        <span className="px-2 py-0.5 rounded bg-amber-700 text-white font-bold text-[10px]">{location.distanceMeters}m</span>
+                      </button>
+                    ))}
+                    {includeConfraternities && nearbyFeatures.confraternities.length === 0 && (
+                      <p className="p-2 rounded-lg bg-white text-slate-600 border border-[#E2D9C8] text-xs">No confraternities or guilds are within range. Increase the scan radius to see more.</p>
+                    )}
+                    {!includeConfraternities && (
+                      <p className="p-2 rounded-lg bg-white text-slate-600 border border-[#E2D9C8] text-xs">Choose Confraternities & Guilds in Route Builder preferences to receive nearby alerts.</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-bold uppercase">Preferred Doge & Dynasty Locations Within {scanRadiusMeters}m</h4>
+                    {nearbyFeatures.doges.map((location) => (
+                      <button
+                        key={location.id}
+                        type="button"
+                        onClick={() => selectResearchLocation(location, 'Doge or Dynasty Location')}
+                        className="w-full p-2 rounded-lg bg-white text-slate-900 border border-sky-200 cursor-pointer flex justify-between items-center text-xs"
+                      >
+                        <span className="font-bold truncate pr-2">{location.name}</span>
+                        <span className="px-2 py-0.5 rounded bg-sky-800 text-white font-bold text-[10px]">{location.distanceMeters}m</span>
+                      </button>
+                    ))}
+                    {includeDoges && nearbyFeatures.doges.length === 0 && (
+                      <p className="p-2 rounded-lg bg-white text-slate-600 border border-[#E2D9C8] text-xs">No doge or dynasty locations are within range. Increase the scan radius to see more.</p>
+                    )}
+                    {!includeDoges && (
+                      <p className="p-2 rounded-lg bg-white text-slate-600 border border-[#E2D9C8] text-xs">Choose Doges & Dynasties in Route Builder preferences to receive nearby alerts.</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-bold uppercase">Preferred Inscriptions & Street Altars Within {scanRadiusMeters}m</h4>
+                    {nearbyFeatures.inscriptions.map((location) => (
+                      <button
+                        key={location.id}
+                        type="button"
+                        onClick={() => selectResearchLocation(location, 'Inscription or Street Altar')}
+                        className="w-full p-2 rounded-lg bg-white text-slate-900 border border-teal-200 cursor-pointer flex justify-between items-center text-xs"
+                      >
+                        <span className="min-w-0 text-left">
+                          <span className="block font-bold truncate">{location.name}</span>
+                          <span className="block text-[10px] text-slate-600 truncate">{location.artifactCategory}</span>
+                        </span>
+                        <span className="ml-2 px-2 py-0.5 rounded bg-teal-800 text-white font-bold text-[10px]">{location.distanceMeters}m</span>
+                      </button>
+                    ))}
+                    {includeInscriptions && nearbyFeatures.inscriptions.length === 0 && (
+                      <p className="p-2 rounded-lg bg-white text-slate-600 border border-[#E2D9C8] text-xs">No inscriptions or street altars are within range. Increase the scan radius to see more.</p>
+                    )}
+                    {!includeInscriptions && (
+                      <p className="p-2 rounded-lg bg-white text-slate-600 border border-[#E2D9C8] text-xs">Choose Inscriptions & Street Altars in Route Builder preferences to receive nearby alerts.</p>
                     )}
                   </div>
                 </div>
@@ -984,7 +1306,7 @@
                 <div className="space-y-3 reveal-on-scroll">
                   <section className="p-2.5 rounded-xl bg-white border border-violet-200 text-slate-900">
                     <h3 className="text-xs font-bold uppercase text-violet-800">Past IQP Data</h3>
-                    <p className="mt-1 mb-2 text-[10px] text-slate-600">Browse historic church records and focus their coordinates on the map.</p>
+                    <p className="mt-1 mb-2 text-[10px] text-slate-600">Browse historic churches, confraternities, guilds, doge-related locations, inscriptions, and street altars; focus any record on the map.</p>
                     <details>
                       <summary className="cursor-pointer rounded-lg bg-violet-50 border border-violet-100 p-2 text-xs font-semibold">
                         Venetian Churches · {VENETIAN_CHURCHES.length} records
@@ -1004,11 +1326,81 @@
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setSelectedChurch(church);
-                                  leafletMapRef.current?.setView([church.lat, church.lng], 16);
+                                  selectResearchLocation(church, 'Venetian Church');
                                   setMapStatusText(`Map focused on ${church.name}`);
                                 }}
                                 className="mt-1 px-2 py-1 rounded bg-violet-800 text-white text-[10px] font-semibold"
+                              >
+                                Show point on map
+                              </button>
+                            </div>
+                          </details>
+                        ))}
+                      </div>
+                    </details>
+                    {[
+                      { title: 'Confraternities & Guilds', locations: VENETIAN_CONFRATERNITIES, label: 'Confraternity or Guild' },
+                      { title: 'Doges & Dynasties', locations: VENETIAN_DOGES, label: 'Doge or Dynasty Location' }
+                    ].map((collection) => (
+                      <details key={collection.label} className="mt-2">
+                        <summary className="cursor-pointer rounded-lg bg-violet-50 border border-violet-100 p-2 text-xs font-semibold">
+                          {collection.title} · {collection.locations.length} records
+                        </summary>
+                        <div className="mt-1 space-y-1">
+                          {collection.locations.map((location) => (
+                            <details key={location.id} className="p-2 rounded-lg border border-[#E2D9C8] text-xs">
+                              <summary className="cursor-pointer font-semibold">
+                                {location.name}
+                                <span className="block text-[10px] font-normal text-slate-500">{location.district} · {location.island}</span>
+                              </summary>
+                              <div className="mt-2 space-y-1 text-[11px]">
+                                <p><strong>Address:</strong> {location.address}</p>
+                                <p><strong>Founded / built:</strong> {location.yearFounded}</p>
+                                <p>{location.description}</p>
+                                <p><strong>Historical context:</strong> {location.historicalContext}</p>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    selectResearchLocation(location, collection.label);
+                                    setMapStatusText(`Map focused on ${location.name}`);
+                                  }}
+                                  className="mt-1 px-2 py-1 rounded bg-violet-800 text-white text-[10px] font-semibold"
+                                >
+                                  Show point on map
+                                </button>
+                              </div>
+                            </details>
+                          ))}
+                        </div>
+                      </details>
+                    ))}
+                    <details className="mt-2">
+                      <summary className="cursor-pointer rounded-lg bg-teal-50 border border-teal-100 p-2 text-xs font-semibold">
+                        Inscriptions & Street Altars · {VENETIAN_INSCRIPTIONS.length} records
+                      </summary>
+                      <div className="mt-1 space-y-1">
+                        {VENETIAN_INSCRIPTIONS.map((location) => (
+                          <details key={location.id} className="p-2 rounded-lg border border-[#E2D9C8] text-xs">
+                            <summary className="cursor-pointer font-semibold">
+                              {location.name}
+                              <span className="block text-[10px] font-normal text-slate-500">{location.district} · {location.artifactCategory} · {location.inscriptionType}</span>
+                            </summary>
+                            <div className="mt-2 space-y-1 text-[11px]">
+                              <p><strong>Address:</strong> {location.address}</p>
+                              <p><strong>Year:</strong> {location.yearFounded}</p>
+                              <p><strong>Description:</strong> {location.description}</p>
+                              {location.originalText && <p><strong>Original inscription:</strong> {location.originalText}</p>}
+                              {location.englishTranslation && <p><strong>English translation:</strong> {location.englishTranslation}</p>}
+                              {location.italianTranslation && <p><strong>Italian translation:</strong> {location.italianTranslation}</p>}
+                              {location.conditionNotes && <p><strong>Condition:</strong> {location.conditionNotes} {location.damageScale && `(damage ${location.damageScale}/5)`}</p>}
+                              {location.historicalContext && <p><strong>Historical context:</strong> {location.historicalContext}</p>}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  selectResearchLocation(location, 'Inscription or Street Altar');
+                                  setMapStatusText(`Map focused on ${location.name}`);
+                                }}
+                                className="mt-1 px-2 py-1 rounded bg-teal-800 text-white text-[10px] font-semibold"
                               >
                                 Show point on map
                               </button>
@@ -1032,7 +1424,7 @@
                   </select>
                   <div className="space-y-1">
                     {filteredCatalogSites.map((s) => (
-                      <div key={s.id} onClick={() => setSelectedSite(s)} className="p-2 rounded-lg bg-white text-slate-900 border border-[#E2D9C8] cursor-pointer flex justify-between items-center text-xs">
+                      <div key={s.id} onClick={() => selectSite(s)} className="p-2 rounded-lg bg-white text-slate-900 border border-[#E2D9C8] cursor-pointer flex justify-between items-center text-xs">
                         <span className="font-bold truncate pr-2">{s.name}</span>
                         <span className="text-[10px] opacity-70">{s.sestiere}</span>
                       </div>
@@ -1067,7 +1459,7 @@
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
                   <span>{mapStatusText}</span>
                 </div>
-                <div className="map-glass pointer-events-auto flex items-center gap-1 bg-[#0F2C36]/95 p-1 rounded-xl border border-slate-700 shadow text-xs">
+                <div className="map-glass pointer-events-auto flex flex-wrap items-center gap-1 bg-[#0F2C36]/95 p-1 rounded-xl border border-slate-700 shadow text-xs">
                   <button onClick={() => setGoogleMapTileStyle('roadmap')} className={`px-2 py-1 rounded-lg font-semibold ${googleMapTileStyle === 'roadmap' ? 'bg-[#B84A39] text-white' : 'text-slate-300'}`}>Street map</button>
                   <button onClick={() => setGoogleMapTileStyle('satellite')} className={`px-2 py-1 rounded-lg font-semibold ${googleMapTileStyle === 'satellite' ? 'bg-[#B84A39] text-white' : 'text-slate-300'}`}>Satellite</button>
                   <label className="flex items-center gap-1.5 px-2 py-1 text-slate-200 cursor-pointer">
@@ -1079,6 +1471,36 @@
                       className="accent-violet-500"
                     />
                     All churches
+                  </label>
+                  <label className="flex items-center gap-1.5 px-2 py-1 text-slate-200 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showAllConfraternities}
+                      onChange={(event) => setShowAllConfraternities(event.target.checked)}
+                      aria-label="Show all confraternity and guild points on the map"
+                      className="accent-amber-500"
+                    />
+                    All confraternities & guilds
+                  </label>
+                  <label className="flex items-center gap-1.5 px-2 py-1 text-slate-200 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showAllDoges}
+                      onChange={(event) => setShowAllDoges(event.target.checked)}
+                      aria-label="Show all doge and dynasty points on the map"
+                      className="accent-sky-500"
+                    />
+                    All doges & dynasties
+                  </label>
+                  <label className="flex items-center gap-1.5 px-2 py-1 text-slate-200 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showAllInscriptions}
+                      onChange={(event) => setShowAllInscriptions(event.target.checked)}
+                      aria-label="Show all inscription and street altar points on the map"
+                      className="accent-teal-500"
+                    />
+                    All inscriptions & street altars
                   </label>
                 </div>
               </div>
@@ -1094,12 +1516,15 @@
                   <span>🔒 300m Obfuscated Dig</span>
                   <span>💧 Potable Fountain</span>
                   <span>✝ Venetian Church</span>
+                  <span>⚒ Confraternity / Guild</span>
+                  <span>♛ Doge / Dynasty</span>
+                  <span>✎ Inscription / Street Altar</span>
                 </div>
               </div>
             </main>
 
             {/* RIGHT RESEARCH & AUDIO STORY DRAWER */}
-            {selectedSite && (
+            {(selectedSite || selectedResearchLocation) && (
               <>
               <button
                 type="button"
@@ -1121,6 +1546,81 @@
                 className={`research-drawer z-20 w-full lg:w-[390px] flex-shrink-0 border-l flex flex-col overflow-y-auto max-h-[45vh] lg:max-h-none ${highContrast ? 'bg-slate-900 border-amber-400' : 'bg-[#F9F6F0] border-[#E2D9C8] shadow-xl'}`}
                 style={{ '--research-width': `${panelSizes.researchWidth}px`, '--research-height': `${panelSizes.researchHeight}px` }}
               >
+                {selectedResearchLocation ? (
+                  <>
+                    <div className="p-3.5 bg-[#0F2C36] text-[#F9F6F0] border-b border-[#D4AF37]/30 sticky top-0 z-10">
+                      <div className="flex flex-wrap items-center justify-between gap-1 mb-2">
+                        <div className="flex gap-1.5">
+                          <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-[#B84A39] text-white">{selectedResearchLocation.district}</span>
+                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-white/10 text-[#D4AF37]">{selectedResearchLocation.collectionLabel}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedResearchLocation(null);
+                            setSelectedChurch(null);
+                          }}
+                          className="text-[10px] font-bold px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-white"
+                        >
+                          Close details
+                        </button>
+                      </div>
+                      <h2 className="text-base font-bold leading-snug" style={{ fontFamily: "'Georgia', serif" }}>{selectedResearchLocation.name}</h2>
+                      <p className="text-[11px] text-slate-300">
+                        {[selectedResearchLocation.address, selectedResearchLocation.island].filter(Boolean).join(' · ')}
+                      </p>
+                      {renderAudioPlayer('Point', getResearchLocationNarration(selectedResearchLocation))}
+                    </div>
+                    <div className="research-drawer-body p-3.5 space-y-3 text-xs leading-relaxed">
+                      {selectedResearchLocation.collectionLabel === 'Inscription or Street Altar' && (
+                        <>
+                          <div className="p-3 rounded-xl bg-teal-50 text-slate-900 border border-teal-200">
+                            <h3 className="text-[10px] font-bold uppercase text-teal-800 mb-1">Inscription record</h3>
+                            <p><strong>Category:</strong> {selectedResearchLocation.artifactCategory}</p>
+                            <p><strong>Type:</strong> {selectedResearchLocation.inscriptionType}</p>
+                            {selectedResearchLocation.thematicClassification && <p><strong>Theme:</strong> {selectedResearchLocation.thematicClassification}</p>}
+                            {selectedResearchLocation.damageScale && <p><strong>Scale of damage:</strong> {selectedResearchLocation.damageScale}/5</p>}
+                            {selectedResearchLocation.conditionNotes && <p className="mt-1"><strong>Condition notes:</strong> {selectedResearchLocation.conditionNotes}</p>}
+                          </div>
+                          {(selectedResearchLocation.originalText || selectedResearchLocation.englishTranslation || selectedResearchLocation.italianTranslation) && (
+                            <div className="p-3 rounded-xl bg-white text-slate-900 border border-[#E2D9C8] space-y-2">
+                              <h3 className="text-[10px] font-bold uppercase text-[#B84A39]">Inscription text & translations</h3>
+                              {selectedResearchLocation.originalText && <p className="whitespace-pre-wrap"><strong>Original:</strong><br />{selectedResearchLocation.originalText}</p>}
+                              {selectedResearchLocation.englishTranslation && <p className="whitespace-pre-wrap"><strong>English translation:</strong><br />{selectedResearchLocation.englishTranslation}</p>}
+                              {selectedResearchLocation.italianTranslation && <p className="whitespace-pre-wrap"><strong>Italian translation:</strong><br />{selectedResearchLocation.italianTranslation}</p>}
+                            </div>
+                          )}
+                          <div className="rounded-xl border border-[#E2D9C8] bg-white text-slate-700 p-2 text-[10px] break-all">
+                            <strong>Survey ObjectID:</strong> {selectedResearchLocation.surveyObjectId || 'Not recorded'}<br />
+                            <strong>GlobalID:</strong> {selectedResearchLocation.globalId || 'Not recorded'}<br />
+                            <strong>Lapidi ID:</strong> {selectedResearchLocation.lapidiId || 'Not recorded'}
+                          </div>
+                        </>
+                      )}
+                      {(selectedResearchLocation.description || selectedResearchLocation.historicalContext) && (
+                        <div className="p-3 rounded-xl bg-white text-slate-900 border border-[#E2D9C8]">
+                          <h3 className="text-[10px] font-bold uppercase text-[#B84A39] mb-1">Historical facts</h3>
+                          {selectedResearchLocation.description && <p>{selectedResearchLocation.description}</p>}
+                          {selectedResearchLocation.historicalContext && (
+                            <p className="mt-2 pt-2 border-t text-[11px] text-slate-700"><strong>Historical context:</strong> {selectedResearchLocation.historicalContext}</p>
+                          )}
+                        </div>
+                      )}
+                      <div className="rounded-xl border border-[#E2D9C8] overflow-hidden bg-white text-slate-900">
+                        <div className="px-3 py-1.5 bg-[#EFE9DD] font-bold text-[10px] uppercase flex justify-between">
+                          <span>Location record</span>
+                          <span>{selectedResearchLocation.lat}°N, {selectedResearchLocation.lng}°E</span>
+                        </div>
+                        <div className="divide-y text-[11px]">
+                          {selectedResearchLocation.yearFounded && <div className="p-2 flex justify-between gap-3"><span className="font-semibold opacity-75">Founded / built:</span><span className="text-right">{selectedResearchLocation.yearFounded}</span></div>}
+                          {selectedResearchLocation.district && <div className="p-2 flex justify-between gap-3"><span className="font-semibold opacity-75">District:</span><span className="text-right">{selectedResearchLocation.district}</span></div>}
+                          {selectedResearchLocation.address && <div className="p-2 flex justify-between gap-3"><span className="font-semibold opacity-75">Address:</span><span className="text-right">{selectedResearchLocation.address}</span></div>}
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                ) : selectedSite && (
+                  <>
                 <div className="p-3.5 bg-[#0F2C36] text-[#F9F6F0] border-b border-[#D4AF37]/30 sticky top-0 z-10">
                   <div className="flex flex-wrap items-center justify-between gap-1 mb-1">
                     <div className="flex gap-1.5">
@@ -1134,21 +1634,7 @@
                   <h2 className="text-base font-bold leading-snug" style={{ fontFamily: "'Georgia', serif" }}>{selectedSite.name}</h2>
                   <p className="text-[11px] text-slate-300 italic">{selectedSite.italianName}</p>
 
-                  {/* Real Web Speech API Audio Player */}
-                  <div className="mt-2.5 p-2 rounded-xl bg-[#091D24] border border-slate-700 flex items-center gap-2.5">
-                    <button onClick={handleToggleAudioSpeech} className="w-8 h-8 rounded-lg bg-[#D4AF37] text-[#0F2C36] font-bold flex items-center justify-center flex-shrink-0">
-                      {isPlayingAudio ? '⏸' : '▶'}
-                    </button>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex justify-between text-[11px] mb-1">
-                        <span className="font-semibold text-[#D4AF37]">{isPlayingAudio ? 'Speaking Audio Tour...' : 'Listen to Story (Real TTS)'}</span>
-                        <span className="text-slate-400">{audioProgress}%</span>
-                      </div>
-                      <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                        <div className="h-full bg-[#D4AF37] transition-all" style={{ width: `${audioProgress}%` }} />
-                      </div>
-                    </div>
-                  </div>
+                  {renderAudioPlayer('Story', getSiteNarration(selectedSite))}
                 </div>
 
                 {/* Standardized 8-Point WPI Research Questions Body */}
@@ -1183,13 +1669,15 @@
                     </div>
                   </div>
                 </div>
+                  </>
+                )}
               </section>
               </>
             )}
           </div>
 
           {/* EMBEDDED GOOGLE MAPS MODAL */}
-          {showGoogleEmbedModal && selectedSite && (
+          {showGoogleEmbedModal && selectedSite && !selectedResearchLocation && (
             <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
               <div className="bg-[#F9F6F0] text-[#1A252C] max-w-2xl w-full rounded-2xl shadow-2xl border border-[#D4AF37] overflow-hidden flex flex-col">
                 <div className="p-3.5 bg-[#0F2C36] text-white flex justify-between items-center">

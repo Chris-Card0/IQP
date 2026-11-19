@@ -1,8 +1,8 @@
 # Ancient Venice Interactive Tour
 
-Interactive historical and archaeological guide for the WPI Venice Project Center. Choose 4–5 landmarks for a walking route, select artifact interests for nearby discoveries, browse research records, and export the site dataset as GeoJSON.
+Interactive historical and archaeological guide for the WPI Venice Project Center. Choose 1–5 landmarks for a walking route, optionally start at your current location, select artifact interests for nearby discoveries, browse research records, and export the site dataset as GeoJSON. A one-stop route requires the current-location start option.
 
-The WPI Research catalog includes past IQP Venetian church records loaded directly from `data/venetian_churches.csv`. Select **Venetian Churches** under Route Builder walking preferences to see church proximity alerts in **Near Me (GPS)**; adjust the preferred-find radius there. Use the **All churches** map toggle to show or hide every church point.
+The WPI Research catalog includes historic records from `data/venetian_churches.csv`, `data/venetian_confraternities_guilds.csv`, `data/venetian_doges_dynasties.csv`, and inscription records from `data/venetian_inscriptions.csv`. The server parses the inscription CSV (including quoted multiline text) and exposes normalized records at `GET /api/inscriptions`. Select **Venetian Churches**, **Confraternities & Guilds**, **Doges & Dynasties**, or **Inscriptions & Street Altars** under Route Builder walking preferences to see nearby locations in **Near Me (GPS)**. Click a nearby location to view its facts and inscription text in the right-hand panel, where it can also be narrated with text-to-speech. Use the corresponding map toggles to show all points in each collection.
 
 ## Run locally
 
