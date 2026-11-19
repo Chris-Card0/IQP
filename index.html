@@ -76,9 +76,9 @@
     let VENETIAN_INSCRIPTIONS = [];
 
     const PRESET_ROUTES = [
-      { id: 'palaces', title: "Aristocratic Palaces to Public Museums", duration: "Santa Croce & Dorsoduro walk", stops: ['ca-pesaro', 'natural-history-fondaco', 'scuola-san-giovanni', 'ca-rezzonico', 'peggy-guggenheim'], tags: ["Adaptive Reuse", "Politics & Republic"] },
-      { id: 'plague', title: "Plague, Quarantines & Votive Architecture", duration: "San Marco & Dorsoduro walk", stops: ['st-marks-basilica', 'salute-plague-votive', 'campo-san-barnaba-altar', 'peggy-guggenheim'], tags: ["Bubonic Plague", "Religious"] },
-      { id: 'guilds', title: "Medieval Guilds & Venetian Commerce", duration: "San Polo & Santa Croce walk", stops: ['rialto-bridge', 'calle-dei-fuseri', 'scuola-san-giovanni', 'ca-pesaro'], tags: ["Guilds & Glass", "Napoleonic & Industrial"] }
+      { id: 'palaces', title: "Aristocratic Palaces to Public Museums", duration: "Santa Croce & Dorsoduro walk", stops: ['ca-pesaro', 'natural-history-fondaco', 'scuola-san-giovanni', 'ca-rezzonico', 'peggy-guggenheim'] },
+      { id: 'plague', title: "Plague, Quarantines & Votive Architecture", duration: "San Marco & Dorsoduro walk", stops: ['st-marks-basilica', 'salute-plague-votive', 'campo-san-barnaba-altar', 'peggy-guggenheim'] },
+      { id: 'guilds', title: "Medieval Guilds & Venetian Commerce", duration: "San Polo & Santa Croce walk", stops: ['rialto-bridge', 'calle-dei-fuseri', 'scuola-san-giovanni', 'ca-pesaro'] }
     ];
 
     function App() {
@@ -96,7 +96,6 @@
       const [compactLayout, setCompactLayout] = useState(() => window.matchMedia('(max-width: 1023px)').matches);
       const [googleMapTileStyle, setGoogleMapTileStyle] = useState('roadmap');
       const [selectedStopIds, setSelectedStopIds] = useState(['st-marks-basilica', 'calle-dei-fuseri', 'rialto-bridge', 'ca-rezzonico', 'peggy-guggenheim']);
-      const [selectedTags, setSelectedTags] = useState(['Adaptive Reuse', 'Bubonic Plague', 'Guilds & Glass']);
       const [includeChurches, setIncludeChurches] = useState(false);
       const [includeConfraternities, setIncludeConfraternities] = useState(false);
       const [includeDoges, setIncludeDoges] = useState(false);
@@ -203,8 +202,6 @@
         });
       };
 
-      const allAvailableTags = ["Bubonic Plague", "Guilds & Glass", "Maritime/Lagoon", "Adaptive Reuse", "Politics & Republic", "Napoleonic & Industrial", "Early Settlement", "Religious", "Everyday Life"];
-
       useEffect(() => {
         let cancelled = false;
         Promise.all([
@@ -302,7 +299,7 @@
 
       const nearbyFeatures = useMemo(() => {
         const sites = VENICE_SITES
-          .filter((site) => site.type !== 'submerged' && !activeRouteIds.includes(site.id) && site.genre.some((genre) => selectedTags.includes(genre)))
+          .filter((site) => site.type !== 'submerged' && !activeRouteIds.includes(site.id))
           .map((site) => ({ ...site, distanceMeters: getDistanceMeters(userGpsPos.lat, userGpsPos.lng, site.lat, site.lng) }))
           .filter((site) => site.distanceMeters <= scanRadiusMeters)
           .sort((a, b) => a.distanceMeters - b.distanceMeters);
@@ -323,7 +320,7 @@
         const inscriptions = getNearbyLocations(VENETIAN_INSCRIPTIONS, includeInscriptions);
         const fountains = DRINKING_FOUNTAINS.map((f) => ({ ...f, distanceMeters: getDistanceMeters(userGpsPos.lat, userGpsPos.lng, f.lat, f.lng) })).filter((f) => f.distanceMeters <= scanRadiusMeters).sort((a, b) => a.distanceMeters - b.distanceMeters);
         return { sites, churches, confraternities, doges, inscriptions, fountains };
-      }, [userGpsPos, scanRadiusMeters, activeRouteIds, selectedTags, includeChurches, includeConfraternities, includeDoges, includeInscriptions]);
+      }, [userGpsPos, scanRadiusMeters, activeRouteIds, includeChurches, includeConfraternities, includeDoges, includeInscriptions]);
       const closestPreferredArtifact = nearbyFeatures.sites.find((site) => site.distanceMeters <= scanRadiusMeters);
       const closestPreferredChurch = nearbyFeatures.churches[0];
       const closestPreferredInscription = nearbyFeatures.inscriptions[0];
@@ -491,7 +488,6 @@
           const isSel = selectedSite?.id === site.id;
           const rIdx = activeRouteIds.indexOf(site.id);
           const isPreferredArtifact = rIdx === -1
-            && site.genre.some((genre) => selectedTags.includes(genre))
             && getDistanceMeters(userGpsPos.lat, userGpsPos.lng, site.lat, site.lng) <= scanRadiusMeters;
           const bg = isSel ? '#D4AF37' : rIdx !== -1 ? '#B84A39' : isPreferredArtifact ? '#0284C7' : site.type === 'minor' ? '#0F2C36' : '#334155';
           const fg = isSel ? '#0F2C36' : '#FFFFFF';
@@ -505,7 +501,7 @@
           m.bindTooltip(`<strong>${site.name}</strong> (${site.sestiere})`);
           m.on('click', () => selectSite(site));
         });
-      }, [activeRouteSites, routeLegs, activeRouteIds, selectedSite, selectedChurch, selectedResearchLocation, showFountains, showSubmergedProtected, showAllChurches, showAllConfraternities, showAllDoges, showAllInscriptions, nearbyFeatures, activeMode, userGpsPos, routeStartFromLocation, routeStartLocation, scanRadiusMeters, selectedTags, isDemoLocation, dataReady]);
+      }, [activeRouteSites, routeLegs, activeRouteIds, selectedSite, selectedChurch, selectedResearchLocation, showFountains, showSubmergedProtected, showAllChurches, showAllConfraternities, showAllDoges, showAllInscriptions, nearbyFeatures, activeMode, userGpsPos, routeStartFromLocation, routeStartLocation, scanRadiusMeters, isDemoLocation, dataReady]);
 
       useEffect(() => {
         if (leafletMapRef.current && selectedSite) {
@@ -994,7 +990,7 @@
 
                   <div>
                     <h3 className="text-[10px] font-bold uppercase opacity-75 mb-1">Walking Preferences — Nearby Finds</h3>
-                    <p className="text-[10px] opacity-75 mb-2">These interests do not add route stops. While you walk, matching artifacts outside your chosen route appear when they are nearby.</p>
+                    <p className="text-[10px] opacity-75 mb-2">These collections do not add route stops. Nearby landmarks and enabled research collections appear while you walk.</p>
                     <label className="mb-2 flex items-center justify-between gap-2 p-2 rounded-lg border border-violet-500/30 bg-violet-500/5 cursor-pointer text-xs font-semibold">
                       <span>🏛 Venetian Churches (Past IQP data)</span>
                       <input
@@ -1035,20 +1031,6 @@
                         className="accent-teal-700"
                       />
                     </label>
-                  <div className="flex flex-wrap gap-1">
-                    {allAvailableTags.map((tag) => {
-                      const active = selectedTags.includes(tag);
-                      return (
-                        <button
-                          key={tag}
-                          onClick={() => setSelectedTags((prev) => prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag])}
-                          className={`px-2 py-0.5 rounded-full text-[11px] font-medium border ${active ? 'bg-[#B84A39] text-white border-[#B84A39]' : 'bg-white text-slate-700 border-[#D5CBB8]'}`}
-                        >
-                          {active ? '✓ ' : '+ '}{tag}
-                        </button>
-                      );
-                    })}
-                  </div>
                   </div>
 
                   {selectedStopIds.length === 1 && (!routeStartFromLocation || !routeStartLocation) && (
@@ -1098,7 +1080,7 @@
                     {PRESET_ROUTES.map((p) => (
                       <button
                         key={p.id}
-                        onClick={() => { setSelectedStopIds(p.stops); setSelectedTags(p.tags); requestWalkingRoute(p.stops); }}
+                        onClick={() => { setSelectedStopIds(p.stops); requestWalkingRoute(p.stops); }}
                         className="w-full text-left p-2 rounded-lg border border-[#D5CBB8] bg-[#F3EDE0] hover:bg-[#EAE0CC] text-xs flex justify-between items-center"
                       >
                         <div><div className="font-bold">{p.title}</div><div className="text-[10px] opacity-75">{p.stops.length} selected stops • {p.duration}</div></div>
