@@ -14,7 +14,7 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./styles.css?v=3" />
 </head>
 <body class="bg-[#F9F6F0] text-[#1A252C]">
   <div id="root"></div>
@@ -24,6 +24,7 @@
 
     const ICON_PATHS = {
       route: ['M3 3v18h18', 'm19 9-5 5-4-4-3 3', 'M19 3h.01'],
+      home: ['m3 10 9-7 9 7', 'M5 9v11h14V9', 'M9 20v-6h6v6'],
       gps: ['M12 2v2', 'M12 20v2', 'm4.93 4.93 1.42 1.42', 'm17.65 17.65 1.42 1.42', 'M2 12h2', 'M20 12h2', 'm6.35 17.65-1.42 1.42', 'm19.07 4.93-1.42 1.42', 'M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z'],
       map: ['M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z', 'M9 3v15', 'M15 6v15'],
       book: ['M4 19.5A2.5 2.5 0 0 1 6.5 17H20', 'M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z'],
@@ -85,7 +86,7 @@
       const [dataReady, setDataReady] = useState(false);
       const [dataLoadError, setDataLoadError] = useState('');
       const [dataLoadAttempt, setDataLoadAttempt] = useState(0);
-      const [activeMode, setActiveMode] = useState('route-builder');
+      const [activeMode, setActiveMode] = useState('home');
       const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
       const [panelSizes, setPanelSizes] = useState({
         sidebarWidth: 350,
@@ -95,7 +96,9 @@
       });
       const [compactLayout, setCompactLayout] = useState(() => window.matchMedia('(max-width: 1023px)').matches);
       const [googleMapTileStyle, setGoogleMapTileStyle] = useState('roadmap');
-      const [selectedStopIds, setSelectedStopIds] = useState(['st-marks-basilica', 'calle-dei-fuseri', 'rialto-bridge', 'ca-rezzonico', 'peggy-guggenheim']);
+      const [selectedStopIds, setSelectedStopIds] = useState([]);
+      const [draftStopIds, setDraftStopIds] = useState([]);
+      const [showStopPicker, setShowStopPicker] = useState(false);
       const [includeChurches, setIncludeChurches] = useState(false);
       const [includeConfraternities, setIncludeConfraternities] = useState(false);
       const [includeDoges, setIncludeDoges] = useState(false);
@@ -243,7 +246,6 @@
           VENETIAN_CONFRATERNITIES = confraternities;
           VENETIAN_DOGES = doges;
           VENETIAN_INSCRIPTIONS = inscriptions;
-          setSelectedSite(sites[0]);
           setMapStatusText(`${sites.length} landmarks, ${churches.length} churches, ${confraternities.length} confraternities & guilds, ${doges.length} doge locations, ${inscriptions.length} inscriptions & street altars, ${fountains.length} fountains`);
           setDataReady(true);
           setDataLoadError('');
@@ -259,7 +261,7 @@
       useEffect(() => {
         const timer = window.setTimeout(() => leafletMapRef.current?.invalidateSize(), 280);
         return () => window.clearTimeout(timer);
-      }, [sidebarCollapsed]);
+      }, [sidebarCollapsed, activeMode]);
 
       useEffect(() => {
         const revealItems = document.querySelectorAll('.reveal-on-scroll:not(.is-visible)');
@@ -326,6 +328,7 @@
       const closestPreferredInscription = nearbyFeatures.inscriptions[0];
       const selectResearchLocation = (location, collectionLabel) => {
         setSelectedChurch(collectionLabel === 'Venetian Church' ? location : null);
+        setSelectedSite(null);
         setSelectedResearchLocation({ ...location, collectionLabel });
         leafletMapRef.current?.setView([location.lat, location.lng], 16);
       };
@@ -334,6 +337,37 @@
         setSelectedChurch(null);
         setSelectedSite(site);
       };
+      const openStopPicker = () => {
+        setDraftStopIds(selectedStopIds);
+        setActiveMode('route-builder');
+        setShowStopPicker(true);
+      };
+      const closeStopPicker = () => setShowStopPicker(false);
+      const applyStopSelection = () => {
+        if (draftStopIds.length < 1 || draftStopIds.length > 5) return;
+        setSelectedStopIds(draftStopIds);
+        clearActiveRoute();
+        if (draftStopIds.length === 1 && (!routeStartFromLocation || !routeStartLocation)) {
+          setMapStatusText("A one-stop route needs a starting location. Enable “Start from my current location”.");
+        } else {
+          requestWalkingRoute(draftStopIds);
+        }
+        closeStopPicker();
+      };
+      const closeLocationDetails = () => {
+        setSelectedSite(null);
+        setSelectedResearchLocation(null);
+        setSelectedChurch(null);
+      };
+
+      useEffect(() => {
+        if (!showStopPicker) return undefined;
+        const closeOnEscape = (event) => {
+          if (event.key === 'Escape') closeStopPicker();
+        };
+        window.addEventListener('keydown', closeOnEscape);
+        return () => window.removeEventListener('keydown', closeOnEscape);
+      }, [showStopPicker]);
 
       const googleMapsRouteUrl = useMemo(() => {
         if (activeRouteSites.length === 0) return 'https://www.google.com/maps/place/Venice,+Italy';
@@ -653,7 +687,6 @@
           setActiveRouteIds(result.route);
           setRouteLegs(result.legs);
           setRouteSummary({ distanceKm, durationMinutes });
-          selectSite(routeSites[0]);
           setMapStatusText(`${startLocation ? 'From your current location • ' : ''}${result.routingProvider}: ${distanceKm.toFixed(2)} km, about ${durationMinutes} min`);
         } catch (error) {
           if (requestId === routeRequestIdRef.current) {
@@ -705,7 +738,7 @@
       };
 
       useEffect(() => {
-        if (dataReady) requestWalkingRoute(selectedStopIds);
+        if (dataReady && selectedStopIds.length > 0) requestWalkingRoute(selectedStopIds);
       }, [dataReady]);
 
       const clearActiveRoute = () => {
@@ -844,6 +877,7 @@
             {/* MODE TABS */}
             <nav className="flex items-center bg-[#091D24] p-1 rounded-xl border border-slate-700/70 gap-1 overflow-x-auto">
               {[
+                { id: 'home', label: 'Home', icon: 'home' },
                 { id: 'route-builder', label: 'Route Builder', icon: 'route' },
                 { id: 'street-wander', label: 'Near Me (GPS)', icon: 'gps' },
                 { id: 'historical-map', label: 'Historical Map (soon)', icon: 'map' },
@@ -851,7 +885,7 @@
               ].map((t) => (
                 <button
                   key={t.id}
-                  onClick={() => setActiveMode(t.id)}
+                  onClick={() => t.id === 'route-builder' ? openStopPicker() : setActiveMode(t.id)}
                   className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap ${activeMode === t.id ? 'bg-[#B84A39] text-white' : 'text-slate-300 hover:text-white'}`}
                 >
                   <Icon name={t.icon} size={14} /> <span>{t.label}</span>
@@ -879,7 +913,7 @@
           </header>
 
           {/* MAIN WORKSPACE */}
-          <div className="flex-1 flex flex-col lg:flex-row relative overflow-hidden">
+          <div className={`flex-1 flex flex-col lg:flex-row relative overflow-hidden ${activeMode === 'home' ? 'hidden' : ''}`}>
             
             {/* LEFT SIDEBAR */}
             <aside
@@ -902,8 +936,8 @@
                 <>
                   <div className="route-hero p-4 rounded-xl bg-[#0F2C36] text-white border border-[#D4AF37]/30 reveal-on-scroll">
                     <div className="hero-badge-small"><span className="hero-badge-dot" />WPI VENICE PROJECT CENTER</div>
-                    <h2 className="route-hero-title">Choose Your Walking Stops</h2>
-                    <p className="text-xs text-slate-200">Choose 1–5 landmarks. Routes can begin at the first landmark or at your current location.</p>
+                    <h2 className="route-hero-title">Build Your Venice Walk</h2>
+                    <p className="text-xs text-slate-200">Choose 1–5 landmarks, then set your route and walking preferences below.</p>
                     <div className="route-metrics">
                       <div className="metric-card">
                         <Icon name="distance" size={16} />
@@ -923,35 +957,34 @@
                     </div>
                   </div>
 
-                  <div className="landmark-list space-y-1 reveal-on-scroll">
-                    <div className="flex justify-between items-center">
-                      <h3 className="text-xs font-bold uppercase">Available Landmarks</h3>
-                      <span className={`text-[10px] font-bold ${selectedStopIds.length >= 1 && selectedStopIds.length <= 5 ? 'text-emerald-700' : 'text-[#B84A39]'}`}>{selectedStopIds.length} / 5 selected</span>
+                  <div className="selected-stops-card reveal-on-scroll">
+                    <div className="selected-stops-heading">
+                      <div>
+                        <h3>Your locations</h3>
+                        <p>{selectedStopIds.length} of 5 stops selected</p>
+                      </div>
+                      <Icon name="pin" size={18} />
                     </div>
-                    {VENICE_SITES.filter((site) => site.type !== 'submerged').map((site) => {
-                      const isSelected = selectedStopIds.includes(site.id);
-                      const isUnavailable = accessibleOnly && !site.accessibleStepFree && !isSelected;
-                      const cannotAddMore = !isSelected && selectedStopIds.length >= 5;
-                      return (
-                        <label key={site.id} className={`landmark-option flex items-start gap-2 p-2 rounded-lg border text-xs ${isSelected ? 'border-[#B84A39] bg-[#B84A39]/5' : 'border-[#E2D9C8] bg-white'} ${isUnavailable || cannotAddMore ? 'opacity-50' : 'cursor-pointer'}`}>
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            disabled={isUnavailable || cannotAddMore}
-                            onChange={() => {
-                              setSelectedStopIds((current) => isSelected ? current.filter((id) => id !== site.id) : [...current, site.id]);
-                              clearActiveRoute();
-                              setMapStatusText("Stops changed. Build a route to see walkable paths.");
-                            }}
-                            className="mt-0.5 accent-[#B84A39]"
-                          />
-                          <span className="min-w-0">
-                            <span className="block font-semibold">{site.name}</span>
-                            <span className="text-[10px] opacity-70">{site.sestiere}{site.accessibleStepFree ? ' • Step-free' : ' • Steps'}</span>
-                          </span>
-                        </label>
-                      );
-                    })}
+                    {selectedStopIds.length > 0 ? (
+                      <ol className="selected-stops-list">
+                        {selectedStopIds.map((id, index) => {
+                          const site = VENICE_SITES.find((item) => item.id === id);
+                          if (!site) return null;
+                          return (
+                            <li key={site.id}>
+                              <span className="selected-stop-number">{index + 1}</span>
+                              <span className="selected-stop-name">{site.name}</span>
+                              <span className="selected-stop-district">{site.sestiere}</span>
+                            </li>
+                          );
+                        })}
+                      </ol>
+                    ) : (
+                      <p className="selected-stops-empty">No locations selected yet. Choose at least one to build a route.</p>
+                    )}
+                    <button type="button" onClick={openStopPicker} className="choose-locations-button">
+                      Choose or change locations
+                    </button>
                   </div>
 
                   <label className="flex items-center justify-between p-2 rounded-xl border border-sky-500/30 bg-sky-500/10 cursor-pointer text-xs font-semibold">
@@ -1538,16 +1571,13 @@
                         </div>
                         <button
                           type="button"
-                          onClick={() => {
-                            setSelectedResearchLocation(null);
-                            setSelectedChurch(null);
-                          }}
+                          onClick={closeLocationDetails}
                           className="text-[10px] font-bold px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-white"
                         >
                           Close details
                         </button>
                       </div>
-                      <h2 className="text-base font-bold leading-snug" style={{ fontFamily: "'Georgia', serif" }}>{selectedResearchLocation.name}</h2>
+                      <h2 id="location-dialog-title" className="text-base font-bold leading-snug" style={{ fontFamily: "'Georgia', serif" }}>{selectedResearchLocation.name}</h2>
                       <p className="text-[11px] text-slate-300">
                         {[selectedResearchLocation.address, selectedResearchLocation.island].filter(Boolean).join(' · ')}
                       </p>
@@ -1609,11 +1639,16 @@
                       <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-[#B84A39] text-white">{selectedSite.sestiere}</span>
                       <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-white/10 text-[#D4AF37]">{selectedSite.category}</span>
                     </div>
-                    <button onClick={() => setShowGoogleEmbedModal(true)} className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white">
-                      🌍 Google Map View
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => setShowGoogleEmbedModal(true)} className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white">
+                        🌍 Google Map View
+                      </button>
+                      <button type="button" onClick={closeLocationDetails} className="text-[10px] font-bold px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-white" aria-label="Close location details">
+                        ✕
+                      </button>
+                    </div>
                   </div>
-                  <h2 className="text-base font-bold leading-snug" style={{ fontFamily: "'Georgia', serif" }}>{selectedSite.name}</h2>
+                  <h2 id="location-dialog-title" className="text-base font-bold leading-snug" style={{ fontFamily: "'Georgia', serif" }}>{selectedSite.name}</h2>
                   <p className="text-[11px] text-slate-300 italic">{selectedSite.italianName}</p>
 
                   {renderAudioPlayer('Story', getSiteNarration(selectedSite))}
@@ -1657,6 +1692,132 @@
               </>
             )}
           </div>
+
+          {activeMode === 'home' && (
+            <main className="home-page flex-1 overflow-y-auto">
+              <section className="home-hero">
+                <div className="home-hero-content">
+                  <span className="home-eyebrow">WPI Venice Project Center · Field guide</span>
+                  <h2>Discover the stories<br />woven into Venice.</h2>
+                  <p>
+                    Ancient Venice is an interactive guide to the city’s historic landmarks and cultural
+                    records. Explore the map, build a walk through the places that interest you, and uncover
+                    the research behind each location.
+                  </p>
+                  <div className="home-actions">
+                    <button type="button" onClick={openStopPicker} className="home-primary-action">
+                      Plan a walking route <Icon name="arrow" size={16} />
+                    </button>
+                    <button type="button" onClick={() => setActiveMode('research-hub')} className="home-secondary-action">
+                      Explore WPI research
+                    </button>
+                  </div>
+                </div>
+                <div className="home-route-preview" aria-hidden="true">
+                  <div className="home-route-preview-header">
+                    <span>PLAN YOUR VISIT</span>
+                    <Icon name="map" size={17} />
+                  </div>
+                  <div className="home-route-preview-path">
+                    <span className="home-route-dot home-route-dot--start">1</span>
+                    <span className="home-route-line" />
+                    <span className="home-route-dot">2</span>
+                    <span className="home-route-line" />
+                    <span className="home-route-dot home-route-dot--end">3</span>
+                  </div>
+                  <div className="home-route-preview-stops">
+                    <span>Historic landmarks</span>
+                    <span>Walking route</span>
+                    <span>WPI research</span>
+                  </div>
+                  <p>Choose places to visit and explore their stories along the way.</p>
+                </div>
+              </section>
+              <section className="home-features" aria-label="What you can explore">
+                <article>
+                  <span className="home-feature-number">01</span>
+                  <h3>Build your own walk</h3>
+                  <p>Choose up to five landmarks, set a starting point, and get a walking route through the city.</p>
+                </article>
+                <article>
+                  <span className="home-feature-number">02</span>
+                  <h3>Explore on the map</h3>
+                  <p>Select a landmark or research location to open its history, location record, and audio narration.</p>
+                </article>
+                <article>
+                  <span className="home-feature-number">03</span>
+                  <h3>Discover the research</h3>
+                  <p>Browse churches, guilds, doges, inscriptions, and other collections from WPI Venice projects.</p>
+                </article>
+              </section>
+            </main>
+          )}
+
+          {showStopPicker && activeMode === 'route-builder' && (
+            <div
+              className="stop-picker-backdrop"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) closeStopPicker();
+              }}
+            >
+              <section
+                className="stop-picker-dialog"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="stop-picker-title"
+                onMouseDown={(event) => event.stopPropagation()}
+              >
+                <header className="stop-picker-header">
+                  <div>
+                    <span>ROUTE BUILDER</span>
+                    <h2 id="stop-picker-title">Choose your locations</h2>
+                    <p>Select 1–5 landmarks for your walk. You can change them whenever you like.</p>
+                  </div>
+                  <button type="button" onClick={closeStopPicker} aria-label="Close location chooser">✕</button>
+                </header>
+                <div className="stop-picker-list">
+                  {VENICE_SITES.filter((site) => site.type !== 'submerged').map((site) => {
+                    const isSelected = draftStopIds.includes(site.id);
+                    const isUnavailable = accessibleOnly && !site.accessibleStepFree;
+                    const cannotAddMore = !isSelected && draftStopIds.length >= 5;
+                    return (
+                      <label key={site.id} className={`stop-picker-option ${isSelected ? 'stop-picker-option--selected' : ''} ${isUnavailable || cannotAddMore ? 'stop-picker-option--disabled' : ''}`}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          disabled={isUnavailable || cannotAddMore}
+                          onChange={() => setDraftStopIds((current) => (
+                            isSelected
+                              ? current.filter((id) => id !== site.id)
+                              : [...current, site.id]
+                          ))}
+                        />
+                        <span className="stop-picker-number">{isSelected ? draftStopIds.indexOf(site.id) + 1 : '＋'}</span>
+                        <span className="stop-picker-location">
+                          <span>{site.name}</span>
+                          <small>{site.sestiere} · {site.accessibleStepFree ? 'Step-free access' : 'Steps'}</small>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <footer className="stop-picker-footer">
+                  <span>{draftStopIds.length === 5 ? '5 of 5 selected · deselect one to change' : `${draftStopIds.length} of 5 locations selected`}</span>
+                  <div>
+                    <button type="button" onClick={closeStopPicker} className="stop-picker-cancel">Cancel</button>
+                    <button
+                      type="button"
+                      onClick={applyStopSelection}
+                      disabled={draftStopIds.length < 1}
+                      className="stop-picker-apply"
+                    >
+                      Use these locations
+                    </button>
+                  </div>
+                </footer>
+              </section>
+            </div>
+          )}
 
           {/* EMBEDDED GOOGLE MAPS MODAL */}
           {showGoogleEmbedModal && selectedSite && !selectedResearchLocation && (
