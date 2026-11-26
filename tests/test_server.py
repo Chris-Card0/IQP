@@ -1,3 +1,4 @@
+import csv
 import io
 import json
 import threading
@@ -18,6 +19,9 @@ from server import (
     load_doges,
     load_inscriptions,
     load_records,
+    load_tassini_heritage,
+    load_today_in_venice_history,
+    load_venice_history_timeline,
 )
 
 
@@ -84,6 +88,13 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(route, selected)
         self.assertEqual(len(route), 4)
         self.assertTrue(all(sites_by_id[site_id]["type"] != "submerged" for site_id in route))
+
+    def test_no_boat_route_rejects_landmarks_on_boat_served_islands(self):
+        for site_id in ("giudecca-stucky-mill", "redentore-giudecca", "murano-glass-furnaces"):
+            with self.subTest(site_id=site_id), self.assertRaisesRegex(
+                ValueError, "requires a boat"
+            ):
+                build_route([site_id], use_boats=False)
 
     def test_accessible_route_only_uses_step_free_stops(self):
         route = build_route(
@@ -198,7 +209,7 @@ class RouteTests(unittest.TestCase):
         request = mock_urlopen.call_args.args[0]
         payload = json.loads(request.data)
         self.assertEqual(payload["costing"], "pedestrian")
-        self.assertEqual(payload["costing_options"]["pedestrian"]["use_ferry"], 0)
+        self.assertEqual(payload["costing_options"]["pedestrian"]["use_ferry"], 1)
         self.assertEqual(
             [(location["lat"], location["lon"]) for location in payload["locations"]],
             [(site["lat"], site["lng"]) for site in load_records("sites.json") if site["id"] in selected],
@@ -268,6 +279,7 @@ class RouteTests(unittest.TestCase):
                 {
                     "stopIds": ["st-marks-basilica"],
                     "accessibleOnly": False,
+                    "useBoats": False,
                     "startLocation": start_location,
                 }
             ).encode("utf-8"),
@@ -280,14 +292,50 @@ class RouteTests(unittest.TestCase):
         self.assertTrue(result["startedFromCurrentLocation"])
         self.assertEqual(len(result["legs"]), 1)
         self.assertEqual(json.loads(mock_urlopen.call_args.args[0].data)["locations"][0]["lat"], 45.4352)
+        self.assertEqual(
+            json.loads(mock_urlopen.call_args.args[0].data)["costing_options"]["pedestrian"]["use_ferry"],
+            0,
+        )
 
-    def test_rejects_routes_that_require_ferries(self):
+    def test_returns_ferry_legs_with_their_travel_time(self):
         selected = ["st-marks-basilica", "calle-dei-fuseri", "rialto-bridge", "ca-rezzonico"]
-        mock_router_response(mocked_router_response(has_ferry=True, travel_type="ferry"))
+        mock_urlopen = mock_router_response(
+            mocked_router_response(has_ferry=True, travel_type="ferry")
+        )
         self.addCleanup(patch.stopall)
 
-        with self.assertRaisesRegex(RuntimeError, "requires a ferry"):
-            get_walkable_route(selected)
+        result = get_walkable_route(selected)
+
+        self.assertTrue(all(leg["hasFerry"] for leg in result["legs"]))
+        self.assertTrue(all(leg["durationMinutes"] == 10 for leg in result["legs"]))
+        payload = json.loads(mock_urlopen.call_args.args[0].data)
+        self.assertEqual(payload["costing_options"]["pedestrian"]["use_ferry"], 1)
+
+    def test_no_boat_route_disables_ferries_and_rejects_ferry_legs(self):
+        selected = ["st-marks-basilica", "calle-dei-fuseri"]
+        mock_urlopen = mock_router_response(
+            mocked_router_response(has_ferry=True, travel_type="ferry", leg_count=1)
+        )
+        self.addCleanup(patch.stopall)
+
+        with self.assertRaisesRegex(RuntimeError, "needs a boat connection"):
+            get_walkable_route(selected, use_boats=False)
+
+        payload = json.loads(mock_urlopen.call_args.args[0].data)
+        self.assertEqual(payload["costing_options"]["pedestrian"]["use_ferry"], 0)
+
+    def test_no_boat_route_can_use_walking_only_connections(self):
+        selected = ["st-marks-basilica", "calle-dei-fuseri"]
+        mock_urlopen = mock_router_response(
+            mocked_router_response(leg_count=1)
+        )
+        self.addCleanup(patch.stopall)
+
+        result = get_walkable_route(selected, use_boats=False)
+
+        self.assertFalse(any(leg["hasFerry"] for leg in result["legs"]))
+        payload = json.loads(mock_urlopen.call_args.args[0].data)
+        self.assertEqual(payload["costing_options"]["pedestrian"]["use_ferry"], 0)
 
     def test_allows_walking_routes_with_a_false_ferry_summary(self):
         selected = ["st-marks-basilica", "calle-dei-fuseri", "rialto-bridge", "ca-rezzonico"]
@@ -297,6 +345,7 @@ class RouteTests(unittest.TestCase):
         result = get_walkable_route(selected)
 
         self.assertEqual(len(result["legs"]), 3)
+        self.assertFalse(any(leg["hasFerry"] for leg in result["legs"]))
 
     def test_reports_routing_service_connection_errors(self):
         mock_urlopen = patch("server.urlopen", side_effect=URLError("offline"))
@@ -359,6 +408,21 @@ class ChurchDataTests(unittest.TestCase):
         self.assertEqual(len(churches), len(load_churches()))
         self.assertEqual(churches[0]["id"], "venetian-church-001")
         self.assertIn("historicalContext", churches[0])
+
+
+class StaticAssetCacheTests(unittest.TestCase):
+    def test_html_and_stylesheet_responses_disable_browser_caching(self):
+        server = VeniceHTTPServer(("127.0.0.1", 0), VeniceRequestHandler)
+        self.addCleanup(server.server_close)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        self.addCleanup(server_thread.join)
+        self.addCleanup(server.shutdown)
+
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        for path in ("/", "/styles.css?v=5"):
+            with self.subTest(path=path), request_urlopen(f"{base_url}{path}") as response:
+                self.assertEqual(response.headers.get("Cache-Control"), "no-store")
 
 
 class HistoricalLocationDataTests(unittest.TestCase):
@@ -450,6 +514,97 @@ class InscriptionDataTests(unittest.TestCase):
         self.assertEqual(inscriptions[0]["originalText"], load_inscriptions()[0]["originalText"])
         self.assertIn("conditionNotes", inscriptions[0])
         self.assertIn("italianTranslation", inscriptions[0])
+
+
+class TassiniHeritageDataTests(unittest.TestCase):
+    def test_tassini_csv_preserves_citations_and_translation(self):
+        locations = load_tassini_heritage()
+
+        with open(
+            "data/venetian_tassini_heritage.csv",
+            encoding="utf-8-sig",
+            newline="",
+        ) as data_file:
+            self.assertEqual(len(locations), sum(1 for _ in csv.DictReader(data_file)))
+        first = locations[0]
+        self.assertEqual(first["id"], "tassini-heritage-001")
+        self.assertEqual(first["name"], "Ponte dei Baretteri (Sede dell'Accademia dei Granelleschi)")
+        self.assertEqual(first["tassiniWorkCited"], "Curiosità Veneziane / Notizie Storiche")
+        self.assertIn("Avendo Daniele Farsetti", first["tassiniQuotation"])
+        self.assertIn("playful assembly", first["englishToponymicAnalysis"])
+        self.assertEqual(first["sourceDocument"], "Encyclopedia_A_Part_01.txt")
+        self.assertTrue(all(-90 <= item["lat"] <= 90 and -180 <= item["lng"] <= 180 for item in locations))
+
+    def test_tassini_api_returns_normalized_csv_records(self):
+        server = VeniceHTTPServer(("127.0.0.1", 0), VeniceRequestHandler)
+        self.addCleanup(server.server_close)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        self.addCleanup(server_thread.join)
+        self.addCleanup(server.shutdown)
+
+        with request_urlopen(
+            f"http://127.0.0.1:{server.server_address[1]}/api/tassini-heritage"
+        ) as response:
+            locations = json.load(response)
+
+        self.assertEqual(len(locations), len(load_tassini_heritage()))
+        self.assertEqual(locations[0]["tassiniCitation"], "Tassini; Distefano 10")
+
+
+class TodayInVeniceHistoryTests(unittest.TestCase):
+    def test_history_loader_returns_up_to_three_events_for_month_and_day(self):
+        events = load_today_in_venice_history(11, 26)
+
+        self.assertEqual(len(events), 3)
+        self.assertEqual([event["year"] for event in events], [1095, 1567, 2006])
+        self.assertTrue(all(event["text"].startswith("On this day in ") for event in events))
+        self.assertTrue(all(event["citation"] and event["sourceDocument"] for event in events))
+
+    def test_history_loader_rejects_invalid_month_and_day(self):
+        with self.assertRaisesRegex(ValueError, "valid month and day"):
+            load_today_in_venice_history(2, 30)
+
+    def test_history_timeline_loader_returns_all_events_and_calendar_dates(self):
+        events = load_venice_history_timeline()
+
+        self.assertEqual(len(events), 1092)
+        self.assertEqual((events[0]["month"], events[0]["day"]), (1, 1))
+        self.assertEqual((events[-1]["month"], events[-1]["day"]), (12, 31))
+        self.assertEqual(len({(event["month"], event["day"]) for event in events}), 366)
+
+    def test_history_api_returns_events_for_requested_calendar_date(self):
+        server = VeniceHTTPServer(("127.0.0.1", 0), VeniceRequestHandler)
+        self.addCleanup(server.server_close)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        self.addCleanup(server_thread.join)
+        self.addCleanup(server.shutdown)
+
+        with request_urlopen(
+            f"http://127.0.0.1:{server.server_address[1]}/api/today-in-venice-history?date=11-26"
+        ) as response:
+            events = json.load(response)
+
+        self.assertEqual(len(events), 3)
+        self.assertEqual(events[0]["year"], 1095)
+        self.assertIn("citation", events[0])
+
+    def test_history_timeline_api_returns_all_events(self):
+        server = VeniceHTTPServer(("127.0.0.1", 0), VeniceRequestHandler)
+        self.addCleanup(server.server_close)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        self.addCleanup(server_thread.join)
+        self.addCleanup(server.shutdown)
+
+        with request_urlopen(
+            f"http://127.0.0.1:{server.server_address[1]}/api/venice-history-timeline"
+        ) as response:
+            events = json.load(response)
+
+        self.assertEqual(len(events), 1092)
+        self.assertEqual((events[-1]["month"], events[-1]["day"]), (12, 31))
 
 
 if __name__ == "__main__":

@@ -4,10 +4,11 @@ import json
 import math
 import os
 import time
+from datetime import date
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -28,7 +29,7 @@ def load_records(filename):
         return json.load(data_file)
 
 
-def load_historical_locations(filename, dataset_name, id_prefix):
+def load_historical_locations(filename, dataset_name, id_prefix, additional_fields=None):
     required_fields = (
         "Location Name",
         "Island",
@@ -39,7 +40,7 @@ def load_historical_locations(filename, dataset_name, id_prefix):
         "Year Built / Founded",
         "Description & Significance",
         "Key Historical Context",
-    )
+    ) + tuple((additional_fields or {}).values())
     locations = []
     with (DATA_DIR / filename).open(encoding="utf-8-sig", newline="") as data_file:
         reader = csv.DictReader(data_file)
@@ -66,20 +67,26 @@ def load_historical_locations(filename, dataset_name, id_prefix):
                 raise ValueError(
                     f"The Venetian {dataset_name} dataset has invalid coordinates on row {index}."
                 )
-            locations.append(
-                {
-                    "id": f"{id_prefix}-{index:03}",
-                    "name": row["Location Name"].strip(),
-                    "island": row["Island"].strip(),
-                    "district": row["Sestiere / District"].strip(),
-                    "address": row["Specific Location / Address"].strip(),
-                    "lat": latitude,
-                    "lng": longitude,
-                    "yearFounded": row["Year Built / Founded"].strip(),
-                    "description": row["Description & Significance"].strip(),
-                    "historicalContext": row["Key Historical Context"].strip(),
-                }
-            )
+            location = {
+                "id": f"{id_prefix}-{index:03}",
+                "name": row["Location Name"].strip(),
+                "island": row["Island"].strip(),
+                "district": row["Sestiere / District"].strip(),
+                "address": row["Specific Location / Address"].strip(),
+                "lat": latitude,
+                "lng": longitude,
+                "yearFounded": row["Year Built / Founded"].strip(),
+                "description": row["Description & Significance"].strip(),
+                "historicalContext": row["Key Historical Context"].strip(),
+            }
+            if additional_fields:
+                location.update(
+                    {
+                        key: (row.get(column) or "").strip()
+                        for key, column in additional_fields.items()
+                    }
+                )
+            locations.append(location)
     return locations
 
 
@@ -182,9 +189,104 @@ def load_inscriptions():
     return inscriptions
 
 
-def build_route(stop_ids, accessible_only=False):
+def load_tassini_heritage():
+    return load_historical_locations(
+        "venetian_tassini_heritage.csv",
+        "Tassini heritage",
+        "tassini-heritage",
+        {
+            "tassiniWorkCited": "Tassini Work Cited",
+            "tassiniCitation": "Tassini Page / Citation",
+            "tassiniQuotation": "Exact Quotation from Tassini",
+            "englishToponymicAnalysis": "English Translation & Toponymic Analysis",
+            "sourceDocument": "Source Document",
+        },
+    )
+
+
+def load_venice_history(month=None, day=None):
+    if (month is None) != (day is None):
+        raise ValueError("Provide both a month and day, or neither.")
+    target_date = None
+    if month is not None:
+        try:
+            target_date = date(2000, month, day)
+        except (TypeError, ValueError) as error:
+            raise ValueError("The history date must be a valid month and day.") from error
+
+    required_fields = (
+        "Month",
+        "Day",
+        "Date Display",
+        "Year",
+        "Event Headline",
+        "Pop-Up Historical Text",
+        "Category",
+        "Historical Location",
+        "Source Citation",
+        "Source Document",
+    )
+    events = []
+    with (DATA_DIR / "today_in_venice_history.csv").open(
+        encoding="utf-8-sig", newline=""
+    ) as data_file:
+        reader = csv.DictReader(data_file)
+        if reader.fieldnames is None or any(
+            field not in reader.fieldnames for field in required_fields
+        ):
+            raise ValueError(
+                "The today in Venice history dataset is missing required columns."
+            )
+        for index, row in enumerate(reader, start=1):
+            try:
+                row_month = int(row["Month"])
+                row_day = int(row["Day"])
+                year = int(row["Year"])
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"The today in Venice history dataset has an invalid date on row {index}."
+                ) from error
+            try:
+                row_date = date(2000, row_month, row_day)
+            except ValueError as error:
+                raise ValueError(
+                    f"The today in Venice history dataset has an invalid date on row {index}."
+                ) from error
+            if target_date and (
+                row_date.month != target_date.month or row_date.day != target_date.day
+            ):
+                continue
+            events.append(
+                {
+                    "id": f"venice-history-{index:04}",
+                    "month": row_date.month,
+                    "day": row_date.day,
+                    "dateDisplay": row["Date Display"].strip(),
+                    "year": year,
+                    "headline": row["Event Headline"].strip(),
+                    "text": row["Pop-Up Historical Text"].strip(),
+                    "category": row["Category"].strip(),
+                    "location": row["Historical Location"].strip(),
+                    "citation": row["Source Citation"].strip(),
+                    "sourceDocument": row["Source Document"].strip(),
+                }
+            )
+    return events
+
+
+def load_today_in_venice_history(month, day):
+    return load_venice_history(month, day)[:3]
+
+
+def load_venice_history_timeline():
+    return load_venice_history()
+
+
+def build_route(stop_ids, accessible_only=False, use_boats=True):
     sites = load_records("sites.json")
     sites_by_id = {site["id"]: site for site in sites}
+    if not isinstance(use_boats, bool):
+        raise ValueError("The boat preference must be true or false.")
     if not isinstance(stop_ids, list) or not 1 <= len(stop_ids) <= 5:
         raise ValueError("Select between 1 and 5 landmarks for your walking route.")
     if any(not isinstance(site_id, str) or site_id not in sites_by_id for site_id in stop_ids):
@@ -195,6 +297,8 @@ def build_route(stop_ids, accessible_only=False):
     route_sites = [sites_by_id[site_id] for site_id in stop_ids]
     if any(site["type"] == "submerged" for site in route_sites):
         raise ValueError("Protected submerged archaeology cannot be added as a walking stop.")
+    if not use_boats and any(site.get("requiresBoat", False) for site in route_sites):
+        raise ValueError("This route includes a landmark that requires a boat. Turn on boat connections or choose another landmark.")
     if accessible_only and any(not site["accessibleStepFree"] for site in route_sites):
         raise ValueError("Every selected landmark must be marked step-free.")
 
@@ -227,8 +331,8 @@ def decode_polyline(encoded, precision=6):
     return coordinates
 
 
-def get_walkable_route(stop_ids, accessible_only=False, start_location=None):
-    build_route(stop_ids, accessible_only)
+def get_walkable_route(stop_ids, accessible_only=False, start_location=None, use_boats=True):
+    build_route(stop_ids, accessible_only, use_boats)
     if start_location is not None:
         if not isinstance(start_location, dict):
             raise ValueError("The route starting location is invalid.")
@@ -267,7 +371,7 @@ def get_walkable_route(stop_ids, accessible_only=False, start_location=None):
             for point in route_points
         ],
         "costing": "pedestrian",
-        "costing_options": {"pedestrian": {"use_ferry": 0}},
+        "costing_options": {"pedestrian": {"use_ferry": 1 if use_boats else 0}},
         "units": "kilometers",
         "shape_format": "polyline6",
         "directions_options": {"units": "kilometers"},
@@ -345,11 +449,11 @@ def get_walkable_route(stop_ids, accessible_only=False, start_location=None):
             isinstance(travel_type, str) and travel_type.casefold() == "ferry"
             for travel_type in travel_types
         )
-        if has_ferry_maneuver or (summary_has_ferry and not has_only_foot_travel_types):
-            raise RuntimeError(
-                "This route requires a ferry and is not a walking-only route. "
-                "Choose stops connected by pedestrian paths."
-            )
+        has_ferry = has_ferry_maneuver or (
+            summary_has_ferry and not has_only_foot_travel_types
+        )
+        if has_ferry and not use_boats:
+            raise RuntimeError("The selected route needs a boat connection. Turn on boat connections or choose another route.")
         instructions = [
             maneuver["instruction"]
             for maneuver in maneuvers
@@ -366,6 +470,7 @@ def get_walkable_route(stop_ids, accessible_only=False, start_location=None):
                 "distanceKm": distance_km,
                 "durationMinutes": math.ceil(duration_seconds / 60),
                 "instructions": instructions,
+                "hasFerry": has_ferry,
             }
         )
 
@@ -391,19 +496,39 @@ class VeniceRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def send_json(self, payload, status=200):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
         if path == "/api/health":
             return self.send_json({"status": "ok"})
+        if path == "/api/venice-history-timeline":
+            return self.send_json(load_venice_history_timeline())
+        if path == "/api/today-in-venice-history":
+            dates = parse_qs(parsed_url.query).get("date", [])
+            try:
+                if len(dates) != 1:
+                    raise ValueError
+                month_text, day_text = dates[0].split("-", 1)
+                target_date = date(2000, int(month_text), int(day_text))
+            except (TypeError, ValueError):
+                return self.send_json(
+                    {"error": "Provide a valid date in MM-DD format."}, 400
+                )
+            return self.send_json(
+                load_today_in_venice_history(target_date.month, target_date.day)
+            )
         if path == "/api/sites":
             return self.send_json(load_records("sites.json"))
         if path == "/api/fountains":
@@ -416,6 +541,8 @@ class VeniceRequestHandler(SimpleHTTPRequestHandler):
             return self.send_json(load_doges())
         if path == "/api/inscriptions":
             return self.send_json(load_inscriptions())
+        if path == "/api/tassini-heritage":
+            return self.send_json(load_tassini_heritage())
         if path == "/api/geojson":
             sites = load_records("sites.json")
             return self.send_json(
@@ -460,14 +587,16 @@ class VeniceRequestHandler(SimpleHTTPRequestHandler):
             stop_ids = request.get("stopIds")
             accessible_only = request.get("accessibleOnly", False)
             start_location = request.get("startLocation")
+            use_boats = request.get("useBoats", True)
             if (
                 not isinstance(stop_ids, list)
                 or not isinstance(accessible_only, bool)
+                or not isinstance(use_boats, bool)
                 or ("startLocation" in request and not isinstance(start_location, dict))
             ):
                 return self.send_json({"error": "Invalid route request."}, 400)
             return self.send_json(
-                get_walkable_route(stop_ids, accessible_only, start_location)
+                get_walkable_route(stop_ids, accessible_only, start_location, use_boats)
             )
         except (json.JSONDecodeError, UnicodeDecodeError):
             return self.send_json({"error": "Request body must contain valid JSON."}, 400)

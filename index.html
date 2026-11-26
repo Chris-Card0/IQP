@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Ancient Venice | WPI Historical & Archaeological Navigator</title>
-  <meta name="description" content="Explore Venice's historic landmarks, build themed walking routes, and browse WPI research records." />
+  <meta name="description" content="Explore Venice's historic landmarks, build personalized walking and ferry routes, and browse Venice research and heritage records." />
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -14,7 +14,7 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <link rel="stylesheet" href="./styles.css?v=3" />
+  <link rel="stylesheet" href="./styles.css?v=5" />
 </head>
 <body class="bg-[#F9F6F0] text-[#1A252C]">
   <div id="root"></div>
@@ -68,6 +68,168 @@
       return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
     }
 
+    function getConstructionYearRange(record) {
+      const value = record.dateConstructed || record.yearFounded;
+      if (typeof value !== 'string' || value.trim() === '') return null;
+      const normalized = value.replace(/[\u2010-\u2015\u2212]/g, '-').trim();
+      const century = normalized.match(/(?:(first|second|early|late)\s+(?:half\s+of\s+)?)?(\d{1,2})(?:st|nd|rd|th)(?:\s*-\s*(\d{1,2})(?:st|nd|rd|th))?\s*(?:century|c\.?)/i);
+      if (century) {
+        const firstCentury = Number(century[2]);
+        const lastCentury = Number(century[3] || century[2]);
+        let start = (firstCentury - 1) * 100 + 1;
+        let end = lastCentury * 100;
+        const period = century[1]?.toLowerCase();
+        if (firstCentury === lastCentury && (period === 'first' || period === 'early')) {
+          end = start + 49;
+        } else if (firstCentury === lastCentury && (period === 'second' || period === 'late')) {
+          start += 50;
+        }
+        return { start, end };
+      }
+
+      const numericDate = normalized.match(/\b(\d{1,4})(?:\s*-\s*(\d{1,4}))?\b/);
+      if (numericDate) {
+        return {
+          start: Number(numericDate[1]),
+          end: Number(numericDate[2] || numericDate[1])
+        };
+      }
+
+      const romanDate = normalized.match(/^\s*([MDCLXVI]{3,})\b/i);
+      if (!romanDate) return null;
+      const values = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+      const numerals = romanDate[1].toUpperCase();
+      let total = 0;
+      for (let index = 0; index < numerals.length; index += 1) {
+        const current = values[numerals[index]];
+        const next = values[numerals[index + 1]] || 0;
+        total += current < next ? -current : current;
+      }
+      return { start: total, end: total };
+    }
+
+    function matchesConstructionYearRange(record, yearFrom, yearTo) {
+      if (yearFrom === '' && yearTo === '') return true;
+      const lowerBound = yearFrom === '' ? -Infinity : Number(yearFrom);
+      const upperBound = yearTo === '' ? Infinity : Number(yearTo);
+      if (lowerBound > upperBound) return true;
+      const constructionYears = getConstructionYearRange(record);
+      return Boolean(constructionYears)
+        && constructionYears.end >= lowerBound
+        && constructionYears.start <= upperBound;
+    }
+
+    function matchesSiteConstructionYearRange(site, yearFrom, yearTo) {
+      return site.type === 'anchor' || matchesConstructionYearRange(site, yearFrom, yearTo);
+    }
+
+    const CURRENT_YEAR = new Date().getFullYear();
+
+    function getAvailableRouteGenres(sites) {
+      return [...new Set(sites.flatMap((site) => (
+        Array.isArray(site.genre) ? site.genre : []
+      )))];
+    }
+
+    function getCollectionRouteGenres(collections, availableGenres) {
+      const collectionGenres = [];
+      if (collections.churches) collectionGenres.push('Religious');
+      if (collections.confraternities) collectionGenres.push('Guilds & Glass');
+      if (collections.doges) collectionGenres.push('Politics & Republic');
+      if (collections.inscriptions) collectionGenres.push('Everyday Life', 'Guilds & Glass');
+      if (collections.tassiniHeritage) collectionGenres.push('Everyday Life');
+      const availableGenreSet = new Set(availableGenres);
+      return [...new Set(collectionGenres)]
+        .filter((genre) => availableGenreSet.has(genre));
+    }
+
+    function orderRouteStops(stopIds, interests, startLocation) {
+      if (interests.length === 0) return stopIds;
+      const remaining = stopIds
+        .map((id, selectionIndex) => ({
+          site: VENICE_SITES.find((item) => item.id === id),
+          selectionIndex
+        }))
+        .filter((entry) => entry.site);
+      const ordered = [];
+      let current = startLocation;
+      const getPreferencePriority = (site) => {
+        const priorities = site.genre
+          .map((genre) => interests.indexOf(genre))
+          .filter((index) => index >= 0);
+        return priorities.length > 0 ? Math.min(...priorities) : Infinity;
+      };
+
+      if (!current && remaining.length > 0) {
+        const matching = remaining.filter(({ site }) => getPreferencePriority(site) !== Infinity);
+        const bestPriority = matching.length > 0
+          ? Math.min(...matching.map(({ site }) => getPreferencePriority(site)))
+          : Infinity;
+        const firstCandidates = bestPriority === Infinity
+          ? remaining
+          : matching.filter(({ site }) => getPreferencePriority(site) === bestPriority);
+        firstCandidates.sort((a, b) => a.selectionIndex - b.selectionIndex);
+        const first = firstCandidates[0];
+        ordered.push(first);
+        remaining.splice(remaining.findIndex((entry) => entry.site.id === first.site.id), 1);
+        current = first.site;
+      }
+
+      while (remaining.length > 0) {
+        const matching = remaining.filter(({ site }) => site.genre.some((genre) => interests.includes(genre)));
+        const bestPriority = matching.length > 0
+          ? Math.min(...matching.map(({ site }) => getPreferencePriority(site)))
+          : Infinity;
+        const preferredGroup = matching.length > 0
+          ? matching.filter(({ site }) => getPreferencePriority(site) === bestPriority)
+          : remaining;
+        preferredGroup.sort((a, b) => {
+          const aDistance = current
+            ? getDistanceMeters(current.lat, current.lng, a.site.lat, a.site.lng)
+            : a.selectionIndex;
+          const bDistance = current
+            ? getDistanceMeters(current.lat, current.lng, b.site.lat, b.site.lng)
+            : b.selectionIndex;
+          return aDistance - bDistance || a.selectionIndex - b.selectionIndex;
+        });
+        const next = preferredGroup[0];
+        ordered.push(next);
+        remaining.splice(remaining.findIndex((entry) => entry.site.id === next.site.id), 1);
+        current = next.site;
+      }
+
+      return ordered.map(({ site }) => site.id);
+    }
+
+    function getExhibitBrief(record) {
+      const text = record.description || record.narrativeScript || record.historicalContext
+        || record.contributionToHistory || record.routeConnection || '';
+      const cleanText = String(text).replace(/\s+/g, ' ').trim();
+      const firstSentence = cleanText.match(/^.{1,180}?[.!?](?=\s|$)/);
+      if (firstSentence) return firstSentence[0];
+      return cleanText.length > 180 ? `${cleanText.slice(0, 177).trimEnd()}…` : cleanText;
+    }
+
+    function ExhibitLabel({ record, showTitle = true }) {
+      const creator = record.creator || record.artist || record.architect;
+      const creationDate = record.dateConstructed || record.yearFounded;
+      const material = record.material;
+      const description = getExhibitBrief(record);
+      return (
+        <div className="exhibit-label">
+          {showTitle && <h3>{record.name}</h3>}
+          {(creator || creationDate || material) && (
+            <dl className="exhibit-label-meta">
+              {creator && <div><dt>Creator</dt><dd>{creator}</dd></div>}
+              {creationDate && <div><dt>Creation date</dt><dd>{creationDate}</dd></div>}
+              {material && <div><dt>Material</dt><dd>{material}</dd></div>}
+            </dl>
+          )}
+          {description && <p>{description}</p>}
+        </div>
+      );
+    }
+
     // Complete Dataset combining Tour Information + WPI IQPs + GNA
     let VENICE_SITES = [];
     let DRINKING_FOUNTAINS = [];
@@ -75,7 +237,7 @@
     let VENETIAN_CONFRATERNITIES = [];
     let VENETIAN_DOGES = [];
     let VENETIAN_INSCRIPTIONS = [];
-
+    let VENETIAN_TASSINI_HERITAGE = [];
     const PRESET_ROUTES = [
       { id: 'palaces', title: "Aristocratic Palaces to Public Museums", duration: "Santa Croce & Dorsoduro walk", stops: ['ca-pesaro', 'natural-history-fondaco', 'scuola-san-giovanni', 'ca-rezzonico', 'peggy-guggenheim'] },
       { id: 'plague', title: "Plague, Quarantines & Votive Architecture", duration: "San Marco & Dorsoduro walk", stops: ['st-marks-basilica', 'salute-plague-votive', 'campo-san-barnaba-altar', 'peggy-guggenheim'] },
@@ -87,6 +249,10 @@
       const [dataLoadError, setDataLoadError] = useState('');
       const [dataLoadAttempt, setDataLoadAttempt] = useState(0);
       const [activeMode, setActiveMode] = useState('home');
+      const [showTodayHistoryPopup, setShowTodayHistoryPopup] = useState(false);
+      const [todayHistoryEvent, setTodayHistoryEvent] = useState(null);
+      const [historyTimeline, setHistoryTimeline] = useState([]);
+      const [selectedDataRecord, setSelectedDataRecord] = useState(null);
       const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
       const [panelSizes, setPanelSizes] = useState({
         sidebarWidth: 350,
@@ -103,21 +269,30 @@
       const [includeConfraternities, setIncludeConfraternities] = useState(false);
       const [includeDoges, setIncludeDoges] = useState(false);
       const [includeInscriptions, setIncludeInscriptions] = useState(false);
+      const [includeTassiniHeritage, setIncludeTassiniHeritage] = useState(false);
       const [showAllChurches, setShowAllChurches] = useState(false);
       const [showAllConfraternities, setShowAllConfraternities] = useState(false);
       const [showAllDoges, setShowAllDoges] = useState(false);
       const [showAllInscriptions, setShowAllInscriptions] = useState(false);
+      const [showAllTassiniHeritage, setShowAllTassiniHeritage] = useState(false);
       const [accessibleOnly, setAccessibleOnly] = useState(false);
+      const [useBoats, setUseBoats] = useState(true);
+      const [builtYearFrom, setBuiltYearFrom] = useState('');
+      const [builtYearTo, setBuiltYearTo] = useState('');
       const [routeStartFromLocation, setRouteStartFromLocation] = useState(false);
       const [routeStartLocation, setRouteStartLocation] = useState(null);
       const [activeRouteIds, setActiveRouteIds] = useState([]);
       const [routeLegs, setRouteLegs] = useState([]);
       const [routeSummary, setRouteSummary] = useState(null);
       const [isBuildingRoute, setIsBuildingRoute] = useState(false);
-      const [mapStatusText, setMapStatusText] = useState('Loading Venice research data...');
+      const [mapStatusText, setMapStatusText] = useState('Loading the Data catalog...');
 
       const [searchQuery, setSearchQuery] = useState('');
-      const [sestiereFilter, setSestiereFilter] = useState('All');
+      const [dataCollectionFilter, setDataCollectionFilter] = useState('All');
+      const [dataYearFrom, setDataYearFrom] = useState('');
+      const [dataYearTo, setDataYearTo] = useState('');
+      const [activeDataYearThumb, setActiveDataYearThumb] = useState('to');
+      const [dataVisibleCount, setDataVisibleCount] = useState(100);
       const [showFountains, setShowFountains] = useState(true);
       const [showSubmergedProtected, setShowSubmergedProtected] = useState(true);
       const [selectedSite, setSelectedSite] = useState(null);
@@ -142,6 +317,7 @@
       const gpsWatchIdRef = useRef(null);
       const routeRequestIdRef = useRef(0);
       const resizeStartRef = useRef(null);
+      const todayHistoryPopupShownRef = useRef(false);
 
       useEffect(() => {
         const updateLayout = () => setCompactLayout(window.matchMedia('(max-width: 1023px)').matches);
@@ -207,6 +383,8 @@
 
       useEffect(() => {
         let cancelled = false;
+        const today = new Date();
+        const historyDate = `${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
         Promise.all([
           fetch('/api/sites').then(async (response) => {
             if (!response.ok) throw new Error(`Landmark data request failed (${response.status}).`);
@@ -231,12 +409,26 @@
           fetch('/api/inscriptions').then(async (response) => {
             if (!response.ok) throw new Error(`Inscription data request failed (${response.status}).`);
             return response.json();
+          }),
+          fetch('/api/tassini-heritage').then(async (response) => {
+            if (!response.ok) throw new Error(`Tassini heritage data request failed (${response.status}).`);
+            return response.json();
+          }),
+          fetch(`/api/today-in-venice-history?date=${historyDate}`).then(async (response) => {
+            if (!response.ok) throw new Error(`Today in Venice history request failed (${response.status}).`);
+            return response.json();
+          }),
+          fetch('/api/venice-history-timeline').then(async (response) => {
+            if (!response.ok) throw new Error(`Venice history timeline request failed (${response.status}).`);
+            return response.json();
           })
-        ]).then(([sites, fountains, churches, confraternities, doges, inscriptions]) => {
+        ]).then(([sites, fountains, churches, confraternities, doges, inscriptions, tassiniHeritage, todayEvents, historyEvents]) => {
           if (!Array.isArray(sites) || !Array.isArray(fountains) || !Array.isArray(churches)
             || !Array.isArray(confraternities) || !Array.isArray(doges) || !Array.isArray(inscriptions)
+            || !Array.isArray(tassiniHeritage) || !Array.isArray(todayEvents) || !Array.isArray(historyEvents)
             || sites.length === 0 || churches.length === 0 || confraternities.length === 0
-            || doges.length === 0 || inscriptions.length === 0) {
+            || doges.length === 0 || inscriptions.length === 0 || tassiniHeritage.length === 0
+            || todayEvents.length === 0 || todayEvents.length > 3 || historyEvents.length === 0) {
             throw new Error("The server returned an invalid or empty Venice dataset.");
           }
           if (cancelled) return;
@@ -246,17 +438,57 @@
           VENETIAN_CONFRATERNITIES = confraternities;
           VENETIAN_DOGES = doges;
           VENETIAN_INSCRIPTIONS = inscriptions;
-          setMapStatusText(`${sites.length} landmarks, ${churches.length} churches, ${confraternities.length} confraternities & guilds, ${doges.length} doge locations, ${inscriptions.length} inscriptions & street altars, ${fountains.length} fountains`);
+          VENETIAN_TASSINI_HERITAGE = tassiniHeritage;
+          setTodayHistoryEvent(todayEvents[Math.floor(Math.random() * todayEvents.length)]);
+          setHistoryTimeline(historyEvents);
+          setMapStatusText(`${sites.length} landmarks, ${churches.length} churches, ${confraternities.length} confraternities & guilds, ${doges.length} doge locations, ${inscriptions.length} inscriptions & street altars, ${tassiniHeritage.length} Tassini heritage records, ${fountains.length} fountains`);
           setDataReady(true);
           setDataLoadError('');
         }).catch((error) => {
           if (cancelled) return;
-          setDataLoadError(error.message || "Could not load Venice research data.");
+          setDataLoadError(error.message || "Could not load the Data catalog.");
         });
         return () => { cancelled = true; };
       }, [dataLoadAttempt]);
 
+      useEffect(() => {
+        if (dataReady && activeMode === 'home' && todayHistoryEvent && !todayHistoryPopupShownRef.current) {
+          todayHistoryPopupShownRef.current = true;
+          setShowTodayHistoryPopup(true);
+        }
+      }, [dataReady, activeMode, todayHistoryEvent]);
+
+      useEffect(() => {
+        if (!showTodayHistoryPopup) return undefined;
+        const handleKeyDown = (event) => {
+          if (event.key === 'Escape') setShowTodayHistoryPopup(false);
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+      }, [showTodayHistoryPopup]);
+
+      useEffect(() => {
+        if (!selectedDataRecord) return undefined;
+        const handleKeyDown = (event) => {
+          if (event.key === 'Escape') setSelectedDataRecord(null);
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+      }, [selectedDataRecord]);
+
       const activeRouteSites = useMemo(() => activeRouteIds.map((id) => VENICE_SITES.find((s) => s.id === id)).filter(Boolean), [activeRouteIds]);
+      const availableRouteGenres = getAvailableRouteGenres(VENICE_SITES);
+      const builtYearRangeInvalid = builtYearFrom !== '' && builtYearTo !== ''
+        && Number(builtYearFrom) > Number(builtYearTo);
+      const isWithinBuiltYearRange = (record) => matchesSiteConstructionYearRange(
+        record,
+        builtYearFrom,
+        builtYearTo
+      );
+      const selectedStopsNeedBoat = selectedStopIds.some((id) => {
+        const site = VENICE_SITES.find((item) => item.id === id);
+        return site?.requiresBoat;
+      });
 
       useEffect(() => {
         const timer = window.setTimeout(() => leafletMapRef.current?.invalidateSize(), 280);
@@ -301,18 +533,22 @@
 
       const nearbyFeatures = useMemo(() => {
         const sites = VENICE_SITES
-          .filter((site) => site.type !== 'submerged' && !activeRouteIds.includes(site.id))
+          .filter((site) => site.type !== 'submerged'
+            && !activeRouteIds.includes(site.id)
+            && matchesSiteConstructionYearRange(site, builtYearFrom, builtYearTo))
           .map((site) => ({ ...site, distanceMeters: getDistanceMeters(userGpsPos.lat, userGpsPos.lng, site.lat, site.lng) }))
           .filter((site) => site.distanceMeters <= scanRadiusMeters)
           .sort((a, b) => a.distanceMeters - b.distanceMeters);
         const churches = includeChurches
           ? VENETIAN_CHURCHES
+            .filter((church) => matchesConstructionYearRange(church, builtYearFrom, builtYearTo))
             .map((church) => ({ ...church, distanceMeters: getDistanceMeters(userGpsPos.lat, userGpsPos.lng, church.lat, church.lng) }))
             .filter((church) => church.distanceMeters <= scanRadiusMeters)
             .sort((a, b) => a.distanceMeters - b.distanceMeters)
           : [];
         const getNearbyLocations = (locations, enabled) => enabled
             ? locations
+              .filter((location) => matchesConstructionYearRange(location, builtYearFrom, builtYearTo))
               .map((location) => ({ ...location, distanceMeters: getDistanceMeters(userGpsPos.lat, userGpsPos.lng, location.lat, location.lng) }))
               .filter((location) => location.distanceMeters <= scanRadiusMeters)
               .sort((a, b) => a.distanceMeters - b.distanceMeters)
@@ -320,12 +556,18 @@
         const confraternities = getNearbyLocations(VENETIAN_CONFRATERNITIES, includeConfraternities);
         const doges = getNearbyLocations(VENETIAN_DOGES, includeDoges);
         const inscriptions = getNearbyLocations(VENETIAN_INSCRIPTIONS, includeInscriptions);
-        const fountains = DRINKING_FOUNTAINS.map((f) => ({ ...f, distanceMeters: getDistanceMeters(userGpsPos.lat, userGpsPos.lng, f.lat, f.lng) })).filter((f) => f.distanceMeters <= scanRadiusMeters).sort((a, b) => a.distanceMeters - b.distanceMeters);
-        return { sites, churches, confraternities, doges, inscriptions, fountains };
-      }, [userGpsPos, scanRadiusMeters, activeRouteIds, includeChurches, includeConfraternities, includeDoges, includeInscriptions]);
+        const tassiniHeritage = getNearbyLocations(VENETIAN_TASSINI_HERITAGE, includeTassiniHeritage);
+        const fountains = DRINKING_FOUNTAINS
+          .filter((fountain) => matchesConstructionYearRange(fountain, builtYearFrom, builtYearTo))
+          .map((f) => ({ ...f, distanceMeters: getDistanceMeters(userGpsPos.lat, userGpsPos.lng, f.lat, f.lng) }))
+          .filter((f) => f.distanceMeters <= scanRadiusMeters)
+          .sort((a, b) => a.distanceMeters - b.distanceMeters);
+        return { sites, churches, confraternities, doges, inscriptions, tassiniHeritage, fountains };
+      }, [userGpsPos, scanRadiusMeters, activeRouteIds, includeChurches, includeConfraternities, includeDoges, includeInscriptions, includeTassiniHeritage, builtYearFrom, builtYearTo]);
       const closestPreferredArtifact = nearbyFeatures.sites.find((site) => site.distanceMeters <= scanRadiusMeters);
       const closestPreferredChurch = nearbyFeatures.churches[0];
       const closestPreferredInscription = nearbyFeatures.inscriptions[0];
+      const closestPreferredTassiniHeritage = nearbyFeatures.tassiniHeritage[0];
       const selectResearchLocation = (location, collectionLabel) => {
         setSelectedChurch(collectionLabel === 'Venetian Church' ? location : null);
         setSelectedSite(null);
@@ -338,19 +580,40 @@
         setSelectedSite(site);
       };
       const openStopPicker = () => {
+        setSelectedDataRecord(null);
         setDraftStopIds(selectedStopIds);
         setActiveMode('route-builder');
         setShowStopPicker(true);
       };
       const closeStopPicker = () => setShowStopPicker(false);
       const applyStopSelection = () => {
-        if (draftStopIds.length < 1 || draftStopIds.length > 5) return;
-        setSelectedStopIds(draftStopIds);
+        if (draftStopIds.length > 5) return;
+        if (builtYearRangeInvalid) {
+          setMapStatusText("Set an earliest year that is before or equal to the latest year.");
+          return;
+        }
+        const eligibleStopIds = draftStopIds.filter((id) => {
+          const site = VENICE_SITES.find((item) => item.id === id);
+          return site && isWithinBuiltYearRange(site);
+        });
+        if (eligibleStopIds.length === 0) {
+          setDraftStopIds([]);
+          setMapStatusText("Choose at least one location within the selected built-year range.");
+          return;
+        }
+        if (eligibleStopIds.length !== draftStopIds.length) {
+          setDraftStopIds(eligibleStopIds);
+        }
+        if (!useBoats && eligibleStopIds.some((id) => VENICE_SITES.find((item) => item.id === id)?.requiresBoat)) {
+          setMapStatusText("Remove landmarks that require a boat before continuing.");
+          return;
+        }
+        setSelectedStopIds(eligibleStopIds);
         clearActiveRoute();
-        if (draftStopIds.length === 1 && (!routeStartFromLocation || !routeStartLocation)) {
+        if (eligibleStopIds.length === 1 && (!routeStartFromLocation || !routeStartLocation)) {
           setMapStatusText("A one-stop route needs a starting location. Enable “Start from my current location”.");
         } else {
-          requestWalkingRoute(draftStopIds);
+          requestWalkingRoute(eligibleStopIds);
         }
         closeStopPicker();
       };
@@ -424,7 +687,9 @@
         });
 
         if (showSubmergedProtected) {
-          VENICE_SITES.filter((s) => s.type === 'submerged').forEach((zone) => {
+          VENICE_SITES
+            .filter((site) => site.type === 'submerged' && isWithinBuiltYearRange(site))
+            .forEach((zone) => {
             const c = L.circle([zone.lat, zone.lng], { radius: 300, color: '#F59E0B', weight: 2, dashArray: '6, 6', fillColor: '#F59E0B', fillOpacity: 0.25 }).addTo(group);
             c.bindTooltip(`<strong>🔒 ${zone.name}</strong><br/>300m Anti-Looting Buffer`);
             c.on('click', () => selectSite(zone));
@@ -432,7 +697,7 @@
         }
 
         if (showFountains) {
-          DRINKING_FOUNTAINS.forEach((f) => {
+          DRINKING_FOUNTAINS.filter(isWithinBuiltYearRange).forEach((f) => {
             const icon = L.divIcon({
               className: '',
               html: `<div style="width:22px;height:22px;border-radius:50%;background:#0284C7;border:2px solid #FFF;display:flex;align-items:center;justify-content:center;color:white;font-size:11px;box-shadow:0 2px 5px rgba(0,0,0,0.4);">💧</div>`,
@@ -457,13 +722,15 @@
           { locations: VENETIAN_CHURCHES, nearby: nearbyFeatures.churches, showAll: showAllChurches, selectedId: selectedChurch?.id, label: 'Venetian Church', color: '#7C3AED', glyph: '✝' },
           { locations: VENETIAN_CONFRATERNITIES, nearby: nearbyFeatures.confraternities, showAll: showAllConfraternities, selectedId: selectedResearchLocation?.collectionLabel === 'Confraternity or Guild' ? selectedResearchLocation.id : null, label: 'Confraternity or Guild', color: '#B45309', glyph: '⚒' },
           { locations: VENETIAN_DOGES, nearby: nearbyFeatures.doges, showAll: showAllDoges, selectedId: selectedResearchLocation?.collectionLabel === 'Doge or Dynasty Location' ? selectedResearchLocation.id : null, label: 'Doge or Dynasty Location', color: '#0369A1', glyph: '♛' },
-          { locations: VENETIAN_INSCRIPTIONS, nearby: nearbyFeatures.inscriptions, showAll: showAllInscriptions, selectedId: selectedResearchLocation?.collectionLabel === 'Inscription or Street Altar' ? selectedResearchLocation.id : null, label: 'Inscription or Street Altar', color: '#0F766E', glyph: '✎' }
+          { locations: VENETIAN_INSCRIPTIONS, nearby: nearbyFeatures.inscriptions, showAll: showAllInscriptions, selectedId: selectedResearchLocation?.collectionLabel === 'Inscription or Street Altar' ? selectedResearchLocation.id : null, label: 'Inscription or Street Altar', color: '#0F766E', glyph: '✎' },
+          { locations: VENETIAN_TASSINI_HERITAGE, nearby: nearbyFeatures.tassiniHeritage, showAll: showAllTassiniHeritage, selectedId: selectedResearchLocation?.collectionLabel === 'Tassini Heritage' ? selectedResearchLocation.id : null, label: 'Tassini Heritage', color: '#9D174D', glyph: '✦' }
         ];
         historicalLocationLayers.forEach((layer) => {
+          const dateFilteredLocations = layer.locations.filter(isWithinBuiltYearRange);
           const nearbyIds = new Set(layer.nearby.map((location) => location.id));
           const visibleLocations = layer.showAll
-            ? layer.locations
-            : layer.locations.filter((location) => nearbyIds.has(location.id) || layer.selectedId === location.id);
+            ? dateFilteredLocations
+            : dateFilteredLocations.filter((location) => nearbyIds.has(location.id) || layer.selectedId === location.id);
           visibleLocations.forEach((location) => {
             const isSelected = layer.selectedId === location.id;
             const icon = L.divIcon({
@@ -518,7 +785,9 @@
           }).bindTooltip('Your route starts here').addTo(group);
         }
 
-        VENICE_SITES.filter((s) => s.type !== 'submerged').forEach((site) => {
+        VENICE_SITES
+          .filter((site) => site.type !== 'submerged' && isWithinBuiltYearRange(site))
+          .forEach((site) => {
           const isSel = selectedSite?.id === site.id;
           const rIdx = activeRouteIds.indexOf(site.id);
           const isPreferredArtifact = rIdx === -1
@@ -535,7 +804,7 @@
           m.bindTooltip(`<strong>${site.name}</strong> (${site.sestiere})`);
           m.on('click', () => selectSite(site));
         });
-      }, [activeRouteSites, routeLegs, activeRouteIds, selectedSite, selectedChurch, selectedResearchLocation, showFountains, showSubmergedProtected, showAllChurches, showAllConfraternities, showAllDoges, showAllInscriptions, nearbyFeatures, activeMode, userGpsPos, routeStartFromLocation, routeStartLocation, scanRadiusMeters, isDemoLocation, dataReady]);
+      }, [activeRouteSites, routeLegs, activeRouteIds, selectedSite, selectedChurch, selectedResearchLocation, showFountains, showSubmergedProtected, showAllChurches, showAllConfraternities, showAllDoges, showAllInscriptions, showAllTassiniHeritage, nearbyFeatures, activeMode, userGpsPos, routeStartFromLocation, routeStartLocation, scanRadiusMeters, isDemoLocation, builtYearFrom, builtYearTo, dataReady]);
 
       useEffect(() => {
         if (leafletMapRef.current && selectedSite) {
@@ -573,6 +842,10 @@
         location.artifactCategory && `Artifact category: ${location.artifactCategory}.`,
         location.inscriptionType && `Inscription type: ${location.inscriptionType}.`,
         location.thematicClassification && `Theme: ${location.thematicClassification}.`,
+        location.tassiniWorkCited && `Tassini work cited: ${location.tassiniWorkCited}.`,
+        location.tassiniCitation && `Citation: ${location.tassiniCitation}.`,
+        location.tassiniQuotation && `Quotation: ${location.tassiniQuotation}.`,
+        location.englishToponymicAnalysis,
         location.description,
         location.historicalContext && !location.artifactCategory
           && `Historical context: ${location.historicalContext}`,
@@ -635,49 +908,77 @@
         stopIds,
         startLocation = routeStartFromLocation ? routeStartLocation : null
       ) => {
+        if (builtYearRangeInvalid) {
+          setMapStatusText("Set an earliest year that is before or equal to the latest year.");
+          return;
+        }
+        if (stopIds.some((id) => {
+          const site = VENICE_SITES.find((item) => item.id === id);
+          return site && !isWithinBuiltYearRange(site);
+        })) {
+          setMapStatusText("Choose only landmarks inside the selected built-year range.");
+          return;
+        }
+        if (!useBoats && stopIds.some((id) => VENICE_SITES.find((item) => item.id === id)?.requiresBoat)) {
+          setMapStatusText("This route includes a landmark that requires a boat. Turn on boat connections or choose another landmark.");
+          return;
+        }
         if (stopIds.length === 1 && !startLocation) {
           setMapStatusText("A one-stop route needs a starting location. Enable “Start from my current location”.");
           return;
         }
+        const effectiveRouteInterests = getCollectionRouteGenres({
+          churches: includeChurches,
+          confraternities: includeConfraternities,
+          doges: includeDoges,
+          inscriptions: includeInscriptions,
+          tassiniHeritage: includeTassiniHeritage
+        }, availableRouteGenres);
+        const orderedStopIds = orderRouteStops(stopIds, effectiveRouteInterests, startLocation);
         const requestId = ++routeRequestIdRef.current;
         setIsBuildingRoute(true);
         setRouteLegs([]);
         setRouteSummary(null);
         setActiveRouteIds([]);
         setMapStatusText(startLocation
-          ? "Finding a walking route from your current location..."
-          : "Finding connected walking paths...");
+          ? `Finding a personalized walking${useBoats ? ' and boat' : '-only'} route from your current location...`
+          : `Finding a personalized walking${useBoats ? ' and boat' : '-only'} route...`);
         try {
           const response = await fetch('/api/routes', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              stopIds,
+              stopIds: orderedStopIds,
               accessibleOnly,
+              useBoats,
               ...(startLocation ? { startLocation: { lat: startLocation.lat, lng: startLocation.lng } } : {})
             })
           });
           const result = await response.json();
           if (requestId !== routeRequestIdRef.current) return;
           if (!response.ok) throw new Error(result.error || `Route request failed (${response.status}).`);
-          if (!Array.isArray(result.route) || result.route.length !== stopIds.length
+          if (!Array.isArray(result.route) || result.route.length !== orderedStopIds.length
             || !Array.isArray(result.legs)
-            || result.legs.length !== stopIds.length - 1 + (startLocation ? 1 : 0)
+            || result.legs.length !== orderedStopIds.length - 1 + (startLocation ? 1 : 0)
             || result.startedFromCurrentLocation !== Boolean(startLocation)) {
-            throw new Error("The routing service returned an incomplete walking route.");
+            throw new Error("The routing service returned an incomplete route.");
           }
           const routeSites = result.route.map((id) => VENICE_SITES.find((site) => site.id === id));
           if (routeSites.some((site) => !site)) throw new Error("The server returned a route with an unknown landmark.");
-          if (result.route.some((id, index) => id !== stopIds[index])) {
-            throw new Error("The routing service changed your selected stop order.");
+          if (result.route.some((id, index) => id !== orderedStopIds[index])) {
+            throw new Error("The routing service changed your personalized stop order.");
           }
           if (result.legs.some((leg) => !Array.isArray(leg.geometry) || leg.geometry.length < 2
             || leg.geometry.some((point) => !Array.isArray(point) || point.length !== 2
               || !point.every((coordinate) => Number.isFinite(coordinate)))
             || typeof leg.fromName !== 'string'
             || !Number.isFinite(Number(leg.distanceKm)) || !Number.isFinite(Number(leg.durationMinutes))
+            || typeof leg.hasFerry !== 'boolean'
             || !Array.isArray(leg.instructions))) {
-            throw new Error("The routing service returned an incomplete walking path.");
+            throw new Error("The routing service returned an incomplete route leg.");
+          }
+          if (!useBoats && result.legs.some((leg) => leg.hasFerry)) {
+            throw new Error("The selected route needs a boat connection. Turn on boat connections or choose another route.");
           }
           const distanceKm = Number(result.distanceKm);
           const durationMinutes = Number(result.durationMinutes);
@@ -687,7 +988,8 @@
           setActiveRouteIds(result.route);
           setRouteLegs(result.legs);
           setRouteSummary({ distanceKm, durationMinutes });
-          setMapStatusText(`${startLocation ? 'From your current location • ' : ''}${result.routingProvider}: ${distanceKm.toFixed(2)} km, about ${durationMinutes} min`);
+          const ferryCount = result.legs.filter((leg) => leg.hasFerry).length;
+          setMapStatusText(`${startLocation ? 'From your current location • ' : ''}${result.routingProvider}: ${distanceKm.toFixed(2)} km, about ${durationMinutes} min${ferryCount ? ` • ${ferryCount} boat leg${ferryCount === 1 ? '' : 's'}` : ''}`);
         } catch (error) {
           if (requestId === routeRequestIdRef.current) {
             setMapStatusText(error.message || "Could not build the route. Please try again.");
@@ -747,6 +1049,48 @@
         setActiveRouteIds([]);
         setRouteLegs([]);
         setRouteSummary(null);
+      };
+
+      const handleCollectionPreferenceChange = (setPreference, enabled) => {
+        setPreference(enabled);
+        clearActiveRoute();
+        setMapStatusText("Collection preferences changed. Build a route to prioritize matching landmarks.");
+      };
+
+      const handleBuiltYearChange = (bound, value) => {
+        const nextFrom = bound === 'from' ? value : builtYearFrom;
+        const nextTo = bound === 'to' ? value : builtYearTo;
+        setBuiltYearFrom(nextFrom);
+        setBuiltYearTo(nextTo);
+        clearActiveRoute();
+
+        if (nextFrom === '' || nextTo === '' || Number(nextFrom) <= Number(nextTo)) {
+          const matchesNextYearRange = (id) => {
+            const site = VENICE_SITES.find((item) => item.id === id);
+            return site && matchesSiteConstructionYearRange(site, nextFrom, nextTo);
+          };
+          setSelectedStopIds((current) => current.filter(matchesNextYearRange));
+          setDraftStopIds((current) => current.filter(matchesNextYearRange));
+        }
+
+        if (activeMode !== 'research-hub') {
+          if (selectedSite && !matchesSiteConstructionYearRange(selectedSite, nextFrom, nextTo)) {
+            setSelectedSite(null);
+          }
+          if (selectedResearchLocation
+            && !matchesConstructionYearRange(selectedResearchLocation, nextFrom, nextTo)) {
+            setSelectedResearchLocation(null);
+            setSelectedChurch(null);
+          }
+        }
+
+        if (nextFrom !== '' && nextTo !== '' && Number(nextFrom) > Number(nextTo)) {
+          setMapStatusText("The earliest year must be before or equal to the latest year.");
+        } else if (nextFrom === '' && nextTo === '') {
+          setMapStatusText("Built-year filter cleared.");
+        } else {
+          setMapStatusText("Built-year range updated for route stops and nearby finds.");
+        }
       };
 
       const handleToggleLocationTracking = () => {
@@ -827,15 +1171,133 @@
         }
       };
 
-      const filteredCatalogSites = useMemo(() => {
-        return VENICE_SITES.filter((s) => {
-          const mSest = sestiereFilter === 'All' || s.sestiere.includes(sestiereFilter);
-          const query = searchQuery.trim().toLowerCase();
-          const searchableText = [s.name, s.italianName, s.sestiere, s.category, s.era, s.narrativeScript, s.historicalContext, s.contributionToHistory, s.funFactlet, s.tassiniNote].join(' ').toLowerCase();
-          const mQ = searchableText.includes(query);
-          return mSest && mQ;
+      const dataCatalogRecords = useMemo(() => {
+        const collections = [
+          { label: 'Venice Landmarks', records: VENICE_SITES },
+          { label: 'Venetian Churches', records: VENETIAN_CHURCHES },
+          { label: 'Confraternities & Guilds', records: VENETIAN_CONFRATERNITIES },
+          { label: 'Doges & Dynasties', records: VENETIAN_DOGES },
+          { label: 'Inscriptions & Street Altars', records: VENETIAN_INSCRIPTIONS },
+          { label: 'Tassini Heritage', records: VENETIAN_TASSINI_HERITAGE },
+          { label: 'Today in Venice History Timeline', records: historyTimeline }
+        ];
+        return collections.flatMap((collection) => collection.records.map((record) => {
+          const title = record.name || record.headline || 'Untitled record';
+          const yearLabel = record.year !== undefined
+            ? String(record.year)
+            : record.dateConstructed || record.yearFounded || '';
+          const description = record.description || record.text || record.narrativeScript
+            || record.historicalContext || record.contributionToHistory || '';
+          return {
+            id: `${collection.label}:${record.id}`,
+            collection: collection.label,
+            record,
+            title,
+            yearLabel,
+            place: record.sestiere || record.district || record.location || '',
+            category: record.category || record.artifactCategory || record.inscriptionType || '',
+            summary: getExhibitBrief({ description }),
+            searchText: [collection.label, ...Object.values(record)]
+              .filter((value) => typeof value === 'string' || typeof value === 'number')
+              .join(' ')
+              .toLowerCase(),
+            yearRangeRecord: record.year !== undefined
+              ? { dateConstructed: String(record.year) }
+              : record
+          };
+        }));
+      }, [dataReady, historyTimeline]);
+
+      const dataYearRangeInvalid = dataYearFrom !== '' && dataYearTo !== ''
+        && Number(dataYearFrom) > Number(dataYearTo);
+      const dataYearIndex = useMemo(() => dataCatalogRecords.flatMap((entry) => {
+        const range = getConstructionYearRange(entry.yearRangeRecord);
+        return range
+          ? [{ entry, start: range.start, end: range.end, year: Math.round((range.start + range.end) / 2) }]
+          : [];
+      }), [dataCatalogRecords]);
+      const dataYearDomain = useMemo(() => {
+        const min = dataYearIndex.length
+          ? Math.min(...dataYearIndex.map((item) => item.start))
+          : 0;
+        const max = dataYearIndex.length
+          ? Math.max(...dataYearIndex.map((item) => item.end))
+          : CURRENT_YEAR;
+        return { min, max: Math.max(min + 1, max) };
+      }, [dataYearIndex]);
+      const dataYearHistogram = useMemo(() => {
+        const query = searchQuery.trim().toLowerCase();
+        const matchingYears = dataYearIndex.filter(({ entry }) => (
+          (dataCollectionFilter === 'All' || entry.collection === dataCollectionFilter)
+          && entry.searchText.includes(query)
+        ));
+        const span = dataYearDomain.max - dataYearDomain.min + 1;
+        const binCount = Math.min(60, Math.max(18, Math.ceil(span / 25)));
+        const binWidth = span / binCount;
+        const bins = Array.from({ length: binCount }, (_, index) => {
+          const start = Math.floor(dataYearDomain.min + index * binWidth);
+          const end = Math.floor(dataYearDomain.min + (index + 1) * binWidth - 1);
+          return { start, end: Math.max(start, end), count: 0 };
         });
-      }, [searchQuery, sestiereFilter]);
+        matchingYears.forEach(({ year }) => {
+          const index = Math.min(binCount - 1, Math.floor((year - dataYearDomain.min) / binWidth));
+          bins[index].count += 1;
+        });
+        return bins;
+      }, [dataYearIndex, dataYearDomain, dataCollectionFilter, searchQuery]);
+      const dataYearHistogramMax = Math.max(1, ...dataYearHistogram.map((bin) => bin.count));
+      const sliderYearFrom = dataYearFrom === ''
+        ? dataYearDomain.min
+        : Math.max(dataYearDomain.min, Math.min(dataYearDomain.max, Number(dataYearFrom)));
+      const sliderYearTo = dataYearTo === ''
+        ? dataYearDomain.max
+        : Math.max(sliderYearFrom, Math.max(dataYearDomain.min, Math.min(dataYearDomain.max, Number(dataYearTo))));
+      const sliderYearSpan = dataYearDomain.max - dataYearDomain.min;
+      const sliderYearLeft = ((sliderYearFrom - dataYearDomain.min) / sliderYearSpan) * 100;
+      const sliderYearWidth = ((sliderYearTo - sliderYearFrom) / sliderYearSpan) * 100;
+      const filteredDataRecords = useMemo(() => {
+        if (dataYearRangeInvalid) return [];
+        const query = searchQuery.trim().toLowerCase();
+        const records = dataCatalogRecords.filter((entry) => (
+          (dataCollectionFilter === 'All' || entry.collection === dataCollectionFilter)
+          && entry.searchText.includes(query)
+          && matchesConstructionYearRange(entry.yearRangeRecord, dataYearFrom, dataYearTo)
+        ));
+        return dataCollectionFilter === 'Today in Venice History Timeline'
+          ? records.sort((first, second) => first.record.year - second.record.year)
+          : records;
+      }, [dataCatalogRecords, dataCollectionFilter, dataYearFrom, dataYearTo, dataYearRangeInvalid, searchQuery]);
+
+      useEffect(() => {
+        setDataVisibleCount(100);
+      }, [searchQuery, dataCollectionFilter, dataYearFrom, dataYearTo]);
+
+      const updateDataYearBound = (bound, year) => {
+        if (bound === 'from') {
+          setDataYearFrom(String(Math.min(year, sliderYearTo)));
+        } else {
+          setDataYearTo(String(Math.max(year, sliderYearFrom)));
+        }
+      };
+      const updateDataYearBoundFromPointer = (event, bound) => {
+        const track = event.currentTarget.parentElement.getBoundingClientRect();
+        const progress = Math.max(0, Math.min(1, (event.clientX - track.left) / track.width));
+        updateDataYearBound(bound, Math.round(dataYearDomain.min + progress * sliderYearSpan));
+      };
+      const handleDataYearSliderKeyDown = (event, bound) => {
+        const currentYear = bound === 'from' ? sliderYearFrom : sliderYearTo;
+        const lowerLimit = bound === 'from' ? dataYearDomain.min : sliderYearFrom;
+        const upperLimit = bound === 'from' ? sliderYearTo : dataYearDomain.max;
+        const step = event.shiftKey ? 10 : 1;
+        let nextYear = currentYear;
+        if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') nextYear -= step;
+        else if (event.key === 'ArrowRight' || event.key === 'ArrowUp') nextYear += step;
+        else if (event.key === 'Home') nextYear = lowerLimit;
+        else if (event.key === 'End') nextYear = upperLimit;
+        else return;
+        event.preventDefault();
+        updateDataYearBound(bound, Math.max(lowerLimit, Math.min(upperLimit, nextYear)));
+      };
 
       if (dataLoadError) {
         return (
@@ -848,7 +1310,7 @@
         );
       }
       if (!dataReady) {
-        return <main className="min-h-screen flex items-center justify-center p-6"><p role="status">Loading Venice research data...</p></main>;
+        return <main className="min-h-screen flex items-center justify-center p-6"><p role="status">Loading the Data catalog...</p></main>;
       }
 
       return (
@@ -880,12 +1342,24 @@
                 { id: 'home', label: 'Home', icon: 'home' },
                 { id: 'route-builder', label: 'Route Builder', icon: 'route' },
                 { id: 'street-wander', label: 'Near Me (GPS)', icon: 'gps' },
-                { id: 'historical-map', label: 'Historical Map (soon)', icon: 'map' },
-                { id: 'research-hub', label: 'WPI Research', icon: 'book' }
+                { id: 'research-hub', label: 'Data', icon: 'book' }
               ].map((t) => (
                 <button
                   key={t.id}
-                  onClick={() => t.id === 'route-builder' ? openStopPicker() : setActiveMode(t.id)}
+                  onClick={() => {
+                    if (t.id === 'route-builder') {
+                      openStopPicker();
+                    } else {
+                      if (t.id === 'research-hub') {
+                        setSidebarCollapsed(false);
+                        setSelectedSite(null);
+                        setSelectedResearchLocation(null);
+                        setSelectedChurch(null);
+                      }
+                      setSelectedDataRecord(null);
+                      setActiveMode(t.id);
+                    }
+                  }}
                   className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap ${activeMode === t.id ? 'bg-[#B84A39] text-white' : 'text-slate-300 hover:text-white'}`}
                 >
                   <Icon name={t.icon} size={14} /> <span>{t.label}</span>
@@ -895,6 +1369,7 @@
 
             {/* ROUTE AND ACCESSIBILITY ACTIONS */}
             <div className="flex items-center gap-1.5">
+              {activeMode !== 'research-hub' && (
               <a
                 href={googleMapsRouteUrl}
                 target="_blank"
@@ -903,6 +1378,7 @@
               >
                 Google Maps <Icon name="arrow" size={14} />
               </a>
+              )}
               <button
                 onClick={() => setHighContrast(!highContrast)}
                 className={`px-2 py-1.5 rounded-lg border text-xs font-semibold ${highContrast ? 'bg-amber-400 text-slate-950' : 'bg-slate-800 text-slate-200 border-slate-600'}`}
@@ -917,10 +1393,10 @@
             
             {/* LEFT SIDEBAR */}
             <aside
-              className={`workspace-sidebar z-20 w-full lg:w-[350px] flex-shrink-0 border-r flex flex-col overflow-y-auto p-3.5 space-y-3.5 max-h-[38vh] lg:max-h-none ${sidebarCollapsed ? 'workspace-sidebar--collapsed' : ''} ${highContrast ? 'bg-slate-900 border-amber-400/50' : 'bg-[#F9F6F0] border-[#E2D9C8]'}`}
+              className={`workspace-sidebar z-20 w-full lg:w-[350px] flex-shrink-0 border-r flex flex-col overflow-y-auto p-3.5 space-y-3.5 max-h-[38vh] lg:max-h-none ${activeMode === 'research-hub' ? 'research-page' : ''} ${sidebarCollapsed ? 'workspace-sidebar--collapsed' : ''} ${highContrast ? 'bg-slate-900 border-amber-400/50' : 'bg-[#F9F6F0] border-[#E2D9C8]'}`}
               style={{ '--sidebar-width': `${panelSizes.sidebarWidth}px`, '--sidebar-height': `${panelSizes.sidebarHeight}px` }}
             >
-              <button
+              {activeMode !== 'research-hub' && <button
                 type="button"
                 className="sidebar-toggle"
                 onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
@@ -930,14 +1406,14 @@
               >
                 <Icon name={sidebarCollapsed ? 'panelOpen' : 'panel'} size={17} />
                 {!sidebarCollapsed && <span>Collapse panel</span>}
-              </button>
+              </button>}
               {!sidebarCollapsed && <div className="sidebar-content">
               {activeMode === 'route-builder' && (
                 <>
                   <div className="route-hero p-4 rounded-xl bg-[#0F2C36] text-white border border-[#D4AF37]/30 reveal-on-scroll">
                     <div className="hero-badge-small"><span className="hero-badge-dot" />WPI VENICE PROJECT CENTER</div>
                     <h2 className="route-hero-title">Build Your Venice Walk</h2>
-                    <p className="text-xs text-slate-200">Choose 1–5 landmarks, then set your route and walking preferences below.</p>
+                    <p className="text-xs text-slate-200">Choose 1–5 landmarks, then prioritize themes to personalize their order.</p>
                     <div className="route-metrics">
                       <div className="metric-card">
                         <Icon name="distance" size={16} />
@@ -947,7 +1423,7 @@
                       <div className="metric-card">
                         <Icon name="clock" size={16} />
                         <span className="metric-value">~{routeStats.walkMins}m</span>
-                        <span className="metric-label">Walking time</span>
+                        <span className="metric-label">Travel time</span>
                       </div>
                       <div className="metric-card">
                         <Icon name="pin" size={16} />
@@ -967,7 +1443,7 @@
                     </div>
                     {selectedStopIds.length > 0 ? (
                       <ol className="selected-stops-list">
-                        {selectedStopIds.map((id, index) => {
+                        {(activeRouteIds.length > 0 ? activeRouteIds : selectedStopIds).map((id, index) => {
                           const site = VENICE_SITES.find((item) => item.id === id);
                           if (!site) return null;
                           return (
@@ -987,6 +1463,99 @@
                     </button>
                   </div>
 
+                  <fieldset className="route-interest-panel">
+                    <legend>Interests &amp; nearby finds</legend>
+                    <p>Choose collections to prioritize matching route landmarks and nearby finds, then set the construction years to explore. The Data catalog is not filtered by these year preferences.</p>
+                    <div className="preference-subgroup">
+                      <h4>Prioritize these collections</h4>
+                      <div className="route-interest-options">
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={includeChurches}
+                            onChange={(event) => handleCollectionPreferenceChange(setIncludeChurches, event.target.checked)}
+                            aria-label="Prioritize Venetian Churches and show nearby church records"
+                          />
+                          <span>Venetian Churches</span>
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={includeConfraternities}
+                            onChange={(event) => handleCollectionPreferenceChange(setIncludeConfraternities, event.target.checked)}
+                            aria-label="Prioritize Confraternities and Guilds and show nearby records"
+                          />
+                          <span>Confraternities &amp; Guilds</span>
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={includeDoges}
+                            onChange={(event) => handleCollectionPreferenceChange(setIncludeDoges, event.target.checked)}
+                            aria-label="Prioritize Doges and Dynasties and show nearby records"
+                          />
+                          <span>Doges &amp; Dynasties</span>
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={includeInscriptions}
+                            onChange={(event) => handleCollectionPreferenceChange(setIncludeInscriptions, event.target.checked)}
+                            aria-label="Prioritize Inscriptions and Street Altars and show nearby records"
+                          />
+                          <span>Inscriptions &amp; Street Altars</span>
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={includeTassiniHeritage}
+                            onChange={(event) => handleCollectionPreferenceChange(setIncludeTassiniHeritage, event.target.checked)}
+                            aria-label="Prioritize Tassini Heritage and show nearby records"
+                          />
+                          <span>Tassini Heritage</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="built-year-filter">
+                      <h4>Built or founded between</h4>
+                      <div className="built-year-fields">
+                        <label>
+                          <span>From year</span>
+                          <input
+                            type="number"
+                            min="0"
+                            max={CURRENT_YEAR}
+                            step="1"
+                            inputMode="numeric"
+                            value={builtYearFrom}
+                            onChange={(event) => handleBuiltYearChange('from', event.target.value)}
+                            aria-label="Earliest construction year"
+                            aria-invalid={builtYearRangeInvalid}
+                          />
+                        </label>
+                        <label>
+                          <span>To year</span>
+                          <input
+                            type="number"
+                            min="0"
+                            max={CURRENT_YEAR}
+                            step="1"
+                            inputMode="numeric"
+                            value={builtYearTo}
+                            onChange={(event) => handleBuiltYearChange('to', event.target.value)}
+                            aria-label="Latest construction year"
+                            aria-invalid={builtYearRangeInvalid}
+                          />
+                        </label>
+                      </div>
+                      <p>Leave both blank to show all years. Dates are matched approximately; records without a usable date are hidden while filtering, but anchor landmarks always remain available.</p>
+                      {builtYearRangeInvalid && (
+                        <p role="alert" className="built-year-error">From year must be earlier than or equal to To year.</p>
+                      )}
+                    </div>
+                  </fieldset>
+
                   <label className="flex items-center justify-between p-2 rounded-xl border border-sky-500/30 bg-sky-500/10 cursor-pointer text-xs font-semibold">
                     <span>♿ Step-Free / Accessible Stops (2018 IQP)</span>
                     <input
@@ -996,7 +1565,7 @@
                         const enabled = e.target.checked;
                         setAccessibleOnly(enabled);
                         clearActiveRoute();
-                        setMapStatusText("Accessibility filter changed. Build a route to see walkable paths.");
+                        setMapStatusText("Accessibility filter changed. Build the route to update the pedestrian path.");
                         if (enabled) {
                           setSelectedStopIds((current) => current.filter((id) => VENICE_SITES.find((site) => site.id === id)?.accessibleStepFree));
                         }
@@ -1005,8 +1574,28 @@
                     />
                   </label>
 
+                  <label className="flex items-center justify-between gap-2 p-2 rounded-xl border border-cyan-500/30 bg-cyan-500/10 cursor-pointer text-xs font-semibold">
+                    <span>Use boat connections</span>
+                    <input
+                      type="checkbox"
+                      checked={useBoats}
+                      onChange={(event) => {
+                        const enabled = event.target.checked;
+                        setUseBoats(enabled);
+                        clearActiveRoute();
+                        if (!enabled) {
+                          setSelectedStopIds((current) => current.filter((id) => !VENICE_SITES.find((site) => site.id === id)?.requiresBoat));
+                          setMapStatusText("Boat connections are off. Landmarks that require a boat have been removed from your route.");
+                        } else {
+                          setMapStatusText("Boat connections are on. Island landmarks are available for route selection.");
+                        }
+                      }}
+                      aria-label="Use boat connections in routes"
+                    />
+                  </label>
+
                   <label className="flex items-center justify-between gap-2 p-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 cursor-pointer text-xs font-semibold">
-                    <span>📍 Start from my current location</span>
+                    <span>Start from my current location</span>
                     <input
                       type="checkbox"
                       checked={routeStartFromLocation}
@@ -1021,57 +1610,15 @@
                     </p>
                   )}
 
-                  <div>
-                    <h3 className="text-[10px] font-bold uppercase opacity-75 mb-1">Walking Preferences — Nearby Finds</h3>
-                    <p className="text-[10px] opacity-75 mb-2">These collections do not add route stops. Nearby landmarks and enabled research collections appear while you walk.</p>
-                    <label className="mb-2 flex items-center justify-between gap-2 p-2 rounded-lg border border-violet-500/30 bg-violet-500/5 cursor-pointer text-xs font-semibold">
-                      <span>🏛 Venetian Churches (Past IQP data)</span>
-                      <input
-                        type="checkbox"
-                        checked={includeChurches}
-                        onChange={(event) => setIncludeChurches(event.target.checked)}
-                        aria-label="Show nearby Venetian churches while walking"
-                        className="accent-violet-700"
-                      />
-                    </label>
-                    <label className="mb-2 flex items-center justify-between gap-2 p-2 rounded-lg border border-amber-500/30 bg-amber-500/5 cursor-pointer text-xs font-semibold">
-                      <span>⚒ Confraternities & Guilds</span>
-                      <input
-                        type="checkbox"
-                        checked={includeConfraternities}
-                        onChange={(event) => setIncludeConfraternities(event.target.checked)}
-                        aria-label="Show nearby confraternities and guilds while walking"
-                        className="accent-amber-700"
-                      />
-                    </label>
-                    <label className="mb-2 flex items-center justify-between gap-2 p-2 rounded-lg border border-sky-500/30 bg-sky-500/5 cursor-pointer text-xs font-semibold">
-                      <span>♛ Doges & Dynasties</span>
-                      <input
-                        type="checkbox"
-                        checked={includeDoges}
-                        onChange={(event) => setIncludeDoges(event.target.checked)}
-                        aria-label="Show nearby doge and dynasty locations while walking"
-                        className="accent-sky-700"
-                      />
-                    </label>
-                    <label className="mb-2 flex items-center justify-between gap-2 p-2 rounded-lg border border-teal-500/30 bg-teal-500/5 cursor-pointer text-xs font-semibold">
-                      <span>✎ Inscriptions & Street Altars</span>
-                      <input
-                        type="checkbox"
-                        checked={includeInscriptions}
-                        onChange={(event) => setIncludeInscriptions(event.target.checked)}
-                        aria-label="Show nearby inscriptions and street altars while walking"
-                        className="accent-teal-700"
-                      />
-                    </label>
-                  </div>
-
                   {selectedStopIds.length === 1 && (!routeStartFromLocation || !routeStartLocation) && (
                     <p className="text-[11px] text-[#B84A39]">For a one-stop route, enable “Start from my current location”.</p>
                   )}
-                  <button disabled={isBuildingRoute || selectedStopIds.length < 1 || selectedStopIds.length > 5 || (selectedStopIds.length === 1 && (!routeStartFromLocation || !routeStartLocation))} onClick={handleBuildStoryRoute} className="action-button w-full py-2 px-3 rounded-xl bg-[#0F2C36] hover:bg-[#194554] disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-xs shadow border border-[#D4AF37]/40">
+                  {selectedStopsNeedBoat && (
+                    <p className="text-[11px] text-[#B84A39]">Remove landmarks that require a boat or turn boat connections back on.</p>
+                  )}
+                  <button disabled={isBuildingRoute || builtYearRangeInvalid || selectedStopsNeedBoat || selectedStopIds.length < 1 || selectedStopIds.length > 5 || (selectedStopIds.length === 1 && (!routeStartFromLocation || !routeStartLocation))} onClick={handleBuildStoryRoute} className="action-button w-full py-2 px-3 rounded-xl bg-[#0F2C36] hover:bg-[#194554] disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-xs shadow border border-[#D4AF37]/40">
                     <Icon name="route" size={15} />
-                    {isBuildingRoute ? 'Finding walkable paths...' : 'Build Route from My Selected Stops'}
+                    {isBuildingRoute ? `Finding walking${useBoats ? ' and boat' : '-only'} connections...` : 'Build My Personalized Route'}
                   </button>
 
                   <div className="pt-2 border-t border-[#E2D9C8] space-y-1.5">
@@ -1094,8 +1641,21 @@
                       return (
                         <details key={`${leg.fromId}-${leg.toId}`} className="ml-7 p-2 rounded-lg bg-white border border-[#E2D9C8] text-xs">
                           <summary className="cursor-pointer font-semibold">
-                            {leg.fromId === 'current-location' ? 'Walk from your location' : 'Walk'} to {destination?.name || 'next stop'} • {Number(leg.distanceKm).toFixed(2)} km • {leg.durationMinutes} min
+                            {leg.hasFerry ? 'Walk + boat connection' : 'Walk'} to {destination?.name || 'next stop'} • {Number(leg.distanceKm).toFixed(2)} km • about {leg.durationMinutes} min
                           </summary>
+                          {leg.hasFerry && (
+                            <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50 p-2 text-[11px]">
+                              <p>Travel time is an estimate and does not include waiting for a boat. Check the boarding stop and departure time for your travel date with ACTV.</p>
+                              <a
+                                href="https://orari.actv.it/?service=NAV&lang=en"
+                                target="_blank"
+                                rel="noreferrer"
+                                className="mt-1 inline-block font-bold text-sky-900 underline"
+                              >
+                                Check official ACTV boat times
+                              </a>
+                            </div>
+                          )}
                           {leg.instructions.length > 0 ? (
                             <ol className="mt-2 ml-4 list-decimal space-y-1 text-[11px]">
                               {leg.instructions.map((instruction, index) => <li key={index}>{instruction}</li>)}
@@ -1110,7 +1670,12 @@
 
                   <div className="pt-2 border-t border-[#E2D9C8] space-y-1">
                     <h3 className="text-[10px] font-bold uppercase opacity-75">Preset Curated Routes:</h3>
-                    {PRESET_ROUTES.map((p) => (
+                    {PRESET_ROUTES
+                      .filter((preset) => preset.stops.every((id) => {
+                        const site = VENICE_SITES.find((item) => item.id === id);
+                        return site && isWithinBuiltYearRange(site) && (useBoats || !site.requiresBoat);
+                      }))
+                      .map((p) => (
                       <button
                         key={p.id}
                         onClick={() => { setSelectedStopIds(p.stops); requestWalkingRoute(p.stops); }}
@@ -1129,7 +1694,7 @@
                   <div className="p-3 rounded-xl bg-[#0F2C36] text-white border border-[#D4AF37]/40">
                     <div className="flex justify-between items-center mb-1">
                       <span className="text-xs font-bold text-[#D4AF37]">📡 "What's Near Me" GPS Radar</span>
-                      <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">{nearbyFeatures.sites.length + nearbyFeatures.churches.length + nearbyFeatures.confraternities.length + nearbyFeatures.doges.length + nearbyFeatures.inscriptions.length} matches</span>
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">{nearbyFeatures.sites.length + nearbyFeatures.churches.length + nearbyFeatures.confraternities.length + nearbyFeatures.doges.length + nearbyFeatures.inscriptions.length + nearbyFeatures.tassiniHeritage.length} matches</span>
                     </div>
                     <label className="mt-2 flex items-center justify-between gap-2 rounded-lg bg-white/10 px-2 py-1.5 text-xs font-semibold cursor-pointer">
                       <span>Demo location — drag the map pin</span>
@@ -1194,6 +1759,18 @@
                       <span className="text-[10px] font-bold uppercase text-teal-800">Nearby inscription preference match • {closestPreferredInscription.distanceMeters}m</span>
                       <span className="block font-bold text-xs mt-1">{closestPreferredInscription.name}</span>
                       <span className="block text-xs opacity-90">{closestPreferredInscription.artifactCategory} · Select to read or listen to the inscription.</span>
+                    </button>
+                  )}
+
+                  {closestPreferredTassiniHeritage && (
+                    <button
+                      type="button"
+                      onClick={() => selectResearchLocation(closestPreferredTassiniHeritage, 'Tassini Heritage')}
+                      className="w-full text-left p-2.5 rounded-xl bg-rose-500/10 border-2 border-rose-400"
+                    >
+                      <span className="text-[10px] font-bold uppercase text-rose-800">Nearby Tassini heritage match • {closestPreferredTassiniHeritage.distanceMeters}m</span>
+                      <span className="block font-bold text-xs mt-1">{closestPreferredTassiniHeritage.name}</span>
+                      <span className="block text-xs opacity-90">{closestPreferredTassiniHeritage.tassiniWorkCited} · Select to read the quotation and translation.</span>
                     </button>
                   )}
 
@@ -1304,152 +1881,269 @@
                       <p className="p-2 rounded-lg bg-white text-slate-600 border border-[#E2D9C8] text-xs">Choose Inscriptions & Street Altars in Route Builder preferences to receive nearby alerts.</p>
                     )}
                   </div>
-                </div>
-              )}
 
-              {activeMode === 'historical-map' && (
-                <div className="space-y-3">
-                  <div className="p-3 rounded-xl border border-[#D4AF37]/50 bg-white text-slate-900">
-                    <span className="text-xs font-bold uppercase text-[#B84A39]">Historical Map Layers — Coming Soon</span>
-                    <p className="mt-2 text-xs">The old year slider showed a placeholder drawing, not historical map data, so it has been removed.</p>
-                    <p className="mt-2 text-xs">This map stays on the present-day street basemap. When your historical database is ready, it can be connected here to show real dated layers.</p>
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-bold uppercase">Preferred Tassini Heritage Within {scanRadiusMeters}m</h4>
+                    {nearbyFeatures.tassiniHeritage.map((location) => (
+                      <button
+                        key={location.id}
+                        type="button"
+                        onClick={() => selectResearchLocation(location, 'Tassini Heritage')}
+                        className="w-full p-2 rounded-lg bg-white text-slate-900 border border-rose-200 cursor-pointer flex justify-between items-center text-xs"
+                      >
+                        <span className="min-w-0 text-left">
+                          <span className="block font-bold truncate">{location.name}</span>
+                          <span className="block text-[10px] text-slate-600 truncate">{location.tassiniWorkCited}</span>
+                        </span>
+                        <span className="ml-2 px-2 py-0.5 rounded bg-rose-800 text-white font-bold text-[10px]">{location.distanceMeters}m</span>
+                      </button>
+                    ))}
+                    {includeTassiniHeritage && nearbyFeatures.tassiniHeritage.length === 0 && (
+                      <p className="p-2 rounded-lg bg-white text-slate-600 border border-[#E2D9C8] text-xs">No Tassini heritage records are within range. Increase the scan radius to see more.</p>
+                    )}
+                    {!includeTassiniHeritage && (
+                      <p className="p-2 rounded-lg bg-white text-slate-600 border border-[#E2D9C8] text-xs">Choose Tassini Heritage in Route Builder preferences to receive nearby alerts.</p>
+                    )}
                   </div>
                 </div>
               )}
 
               {activeMode === 'research-hub' && (
-                <div className="space-y-3 reveal-on-scroll">
-                  <section className="p-2.5 rounded-xl bg-white border border-violet-200 text-slate-900">
-                    <h3 className="text-xs font-bold uppercase text-violet-800">Past IQP Data</h3>
-                    <p className="mt-1 mb-2 text-[10px] text-slate-600">Browse historic churches, confraternities, guilds, doge-related locations, inscriptions, and street altars; focus any record on the map.</p>
-                    <details>
-                      <summary className="cursor-pointer rounded-lg bg-violet-50 border border-violet-100 p-2 text-xs font-semibold">
-                        Venetian Churches · {VENETIAN_CHURCHES.length} records
-                      </summary>
-                      <div className="mt-1 space-y-1">
-                        {VENETIAN_CHURCHES.map((church) => (
-                          <details key={church.id} className="p-2 rounded-lg border border-[#E2D9C8] text-xs">
-                            <summary className="cursor-pointer font-semibold">
-                              {church.name}
-                              <span className="block text-[10px] font-normal text-slate-500">{church.district} · {church.island}</span>
-                            </summary>
-                            <div className="mt-2 space-y-1 text-[11px]">
-                              <p><strong>Address:</strong> {church.address}</p>
-                              <p><strong>Founded / built:</strong> {church.yearFounded}</p>
-                              <p>{church.description}</p>
-                              <p><strong>Historical context:</strong> {church.historicalContext}</p>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  selectResearchLocation(church, 'Venetian Church');
-                                  setMapStatusText(`Map focused on ${church.name}`);
-                                }}
-                                className="mt-1 px-2 py-1 rounded bg-violet-800 text-white text-[10px] font-semibold"
-                              >
-                                Show point on map
-                              </button>
-                            </div>
-                          </details>
-                        ))}
-                      </div>
-                    </details>
-                    {[
-                      { title: 'Confraternities & Guilds', locations: VENETIAN_CONFRATERNITIES, label: 'Confraternity or Guild' },
-                      { title: 'Doges & Dynasties', locations: VENETIAN_DOGES, label: 'Doge or Dynasty Location' }
-                    ].map((collection) => (
-                      <details key={collection.label} className="mt-2">
-                        <summary className="cursor-pointer rounded-lg bg-violet-50 border border-violet-100 p-2 text-xs font-semibold">
-                          {collection.title} · {collection.locations.length} records
-                        </summary>
-                        <div className="mt-1 space-y-1">
-                          {collection.locations.map((location) => (
-                            <details key={location.id} className="p-2 rounded-lg border border-[#E2D9C8] text-xs">
-                              <summary className="cursor-pointer font-semibold">
-                                {location.name}
-                                <span className="block text-[10px] font-normal text-slate-500">{location.district} · {location.island}</span>
-                              </summary>
-                              <div className="mt-2 space-y-1 text-[11px]">
-                                <p><strong>Address:</strong> {location.address}</p>
-                                <p><strong>Founded / built:</strong> {location.yearFounded}</p>
-                                <p>{location.description}</p>
-                                <p><strong>Historical context:</strong> {location.historicalContext}</p>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    selectResearchLocation(location, collection.label);
-                                    setMapStatusText(`Map focused on ${location.name}`);
-                                  }}
-                                  className="mt-1 px-2 py-1 rounded bg-violet-800 text-white text-[10px] font-semibold"
-                                >
-                                  Show point on map
-                                </button>
-                              </div>
-                            </details>
+                <div className="space-y-4 pb-6">
+                  <header className="flex flex-wrap items-end justify-between gap-3 rounded-2xl bg-[#0F2C36] p-5 text-white shadow-sm">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#D4AF37]">Venice field guide</span>
+                      <h2 className="mt-1 text-2xl font-bold" style={{ fontFamily: "'Georgia', serif" }}>Data</h2>
+                      <p className="mt-1 max-w-2xl text-sm text-slate-300">Search landmarks, heritage collections, inscriptions, and the complete history timeline in one place.</p>
+                    </div>
+                    <button onClick={handleExportGeoJSON} className="rounded-lg bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/20">
+                      <Icon name="download" size={14} /> Export landmark data
+                    </button>
+                  </header>
+
+                  <section className="rounded-2xl border border-[#E2D9C8] bg-white p-4 shadow-sm">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="space-y-1 text-xs font-semibold text-slate-700">
+                        Search records
+                        <input
+                          type="search"
+                          value={searchQuery}
+                          onChange={(event) => setSearchQuery(event.target.value)}
+                          placeholder="Name, place, description, or source"
+                          className="w-full rounded-lg border border-[#D5CBB8] bg-[#F9F6F0] px-3 py-2 text-sm font-normal text-slate-900"
+                        />
+                      </label>
+                      <label className="space-y-1 text-xs font-semibold text-slate-700">
+                        Collection
+                        <select
+                          value={dataCollectionFilter}
+                          onChange={(event) => setDataCollectionFilter(event.target.value)}
+                          className="w-full rounded-lg border border-[#D5CBB8] bg-[#F9F6F0] px-3 py-2 text-sm font-normal text-slate-900"
+                        >
+                          <option value="All">All collections</option>
+                          {[...new Set(dataCatalogRecords.map((entry) => entry.collection))].map((collection) => (
+                            <option key={collection} value={collection}>{collection}</option>
                           ))}
+                        </select>
+                      </label>
+                    </div>
+                    <div className="mt-4 border-t border-[#E2D9C8] pt-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <h3 className="text-xs font-bold uppercase text-slate-700">Built or founded years</h3>
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            {dataYearFrom === '' && dataYearTo === ''
+                              ? 'All years'
+                              : `${dataYearFrom || 'Any'} – ${dataYearTo || 'Any'}`}
+                            {' · '}
+                            {dataYearHistogram.reduce((total, bin) => total + bin.count, 0).toLocaleString()} dated records
+                          </p>
                         </div>
-                      </details>
-                    ))}
-                    <details className="mt-2">
-                      <summary className="cursor-pointer rounded-lg bg-teal-50 border border-teal-100 p-2 text-xs font-semibold">
-                        Inscriptions & Street Altars · {VENETIAN_INSCRIPTIONS.length} records
-                      </summary>
-                      <div className="mt-1 space-y-1">
-                        {VENETIAN_INSCRIPTIONS.map((location) => (
-                          <details key={location.id} className="p-2 rounded-lg border border-[#E2D9C8] text-xs">
-                            <summary className="cursor-pointer font-semibold">
-                              {location.name}
-                              <span className="block text-[10px] font-normal text-slate-500">{location.district} · {location.artifactCategory} · {location.inscriptionType}</span>
-                            </summary>
-                            <div className="mt-2 space-y-1 text-[11px]">
-                              <p><strong>Address:</strong> {location.address}</p>
-                              <p><strong>Year:</strong> {location.yearFounded}</p>
-                              <p><strong>Description:</strong> {location.description}</p>
-                              {location.originalText && <p><strong>Original inscription:</strong> {location.originalText}</p>}
-                              {location.englishTranslation && <p><strong>English translation:</strong> {location.englishTranslation}</p>}
-                              {location.italianTranslation && <p><strong>Italian translation:</strong> {location.italianTranslation}</p>}
-                              {location.conditionNotes && <p><strong>Condition:</strong> {location.conditionNotes} {location.damageScale && `(damage ${location.damageScale}/5)`}</p>}
-                              {location.historicalContext && <p><strong>Historical context:</strong> {location.historicalContext}</p>}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  selectResearchLocation(location, 'Inscription or Street Altar');
-                                  setMapStatusText(`Map focused on ${location.name}`);
-                                }}
-                                className="mt-1 px-2 py-1 rounded bg-teal-800 text-white text-[10px] font-semibold"
-                              >
-                                Show point on map
-                              </button>
-                            </div>
-                          </details>
-                        ))}
+                        {(dataYearFrom !== '' || dataYearTo !== '') && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDataYearFrom('');
+                              setDataYearTo('');
+                            }}
+                            className="rounded-md px-2.5 py-1 text-xs font-semibold text-[#8F382B] hover:bg-[#B84A39]/10"
+                          >
+                            Reset years
+                          </button>
+                        )}
                       </div>
-                    </details>
+
+                      <div className="data-year-histogram mt-3" role="img" aria-label="Histogram of dated records by year for the selected collection and search">
+                        {dataYearHistogram.map((bin, index) => {
+                          const inRange = bin.end >= sliderYearFrom && bin.start <= sliderYearTo;
+                          const height = bin.count
+                            ? Math.max(5, (bin.count / dataYearHistogramMax) * 100)
+                            : 2;
+                          return (
+                            <span
+                              key={index}
+                              className={`data-year-histogram-bar ${inRange ? 'data-year-histogram-bar--selected' : ''}`}
+                              style={{ height: `${height}%` }}
+                              title={`${bin.start}${bin.end > bin.start ? `–${bin.end}` : ''}: ${bin.count} ${bin.count === 1 ? 'record' : 'records'}`}
+                            />
+                          );
+                        })}
+                      </div>
+                      <div className="flex justify-between text-[10px] text-slate-500" aria-hidden="true">
+                        <span>{dataYearDomain.min}</span>
+                        <span>{Math.round((dataYearDomain.min + dataYearDomain.max) / 2)}</span>
+                        <span>{dataYearDomain.max}</span>
+                      </div>
+                      <div className="data-year-range-slider mt-1">
+                        <div className="data-year-range-track" />
+                        <div
+                          className="data-year-range-selection"
+                          style={{ left: `${sliderYearLeft}%`, width: `${sliderYearWidth}%` }}
+                        />
+                        <button
+                          type="button"
+                          role="slider"
+                          className="data-year-range-thumb"
+                          style={{
+                            left: `${sliderYearLeft}%`,
+                            zIndex: activeDataYearThumb === 'from' ? 2 : 1
+                          }}
+                          aria-label="Minimum construction year"
+                          aria-orientation="horizontal"
+                          aria-valuemin={dataYearDomain.min}
+                          aria-valuemax={sliderYearTo}
+                          aria-valuenow={sliderYearFrom}
+                          aria-valuetext={`${sliderYearFrom}`}
+                          onFocus={() => setActiveDataYearThumb('from')}
+                          onKeyDown={(event) => handleDataYearSliderKeyDown(event, 'from')}
+                          onPointerDown={(event) => {
+                            setActiveDataYearThumb('from');
+                            event.currentTarget.setPointerCapture(event.pointerId);
+                            updateDataYearBoundFromPointer(event, 'from');
+                          }}
+                          onPointerMove={(event) => {
+                            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                              updateDataYearBoundFromPointer(event, 'from');
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          role="slider"
+                          className="data-year-range-thumb"
+                          style={{
+                            left: `${sliderYearTo === sliderYearFrom ? sliderYearLeft : sliderYearLeft + sliderYearWidth}%`,
+                            zIndex: activeDataYearThumb === 'to' ? 2 : 1
+                          }}
+                          aria-label="Maximum construction year"
+                          aria-orientation="horizontal"
+                          aria-valuemin={sliderYearFrom}
+                          aria-valuemax={dataYearDomain.max}
+                          aria-valuenow={sliderYearTo}
+                          aria-valuetext={`${sliderYearTo}`}
+                          onFocus={() => setActiveDataYearThumb('to')}
+                          onKeyDown={(event) => handleDataYearSliderKeyDown(event, 'to')}
+                          onPointerDown={(event) => {
+                            setActiveDataYearThumb('to');
+                            event.currentTarget.setPointerCapture(event.pointerId);
+                            updateDataYearBoundFromPointer(event, 'to');
+                          }}
+                          onPointerMove={(event) => {
+                            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                              updateDataYearBoundFromPointer(event, 'to');
+                            }
+                          }}
+                        />
+                      </div>
+
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        <label className="space-y-1 text-xs font-semibold text-slate-700">
+                          From year
+                          <input
+                            type="number"
+                            min={dataYearDomain.min}
+                            max={dataYearDomain.max}
+                            step="1"
+                            value={dataYearFrom}
+                            onChange={(event) => setDataYearFrom(event.target.value)}
+                            placeholder={`Any (${dataYearDomain.min})`}
+                            className="w-full rounded-lg border border-[#D5CBB8] bg-[#F9F6F0] px-3 py-2 text-sm font-normal text-slate-900"
+                          />
+                        </label>
+                        <label className="space-y-1 text-xs font-semibold text-slate-700">
+                          To year
+                          <input
+                            type="number"
+                            min={dataYearDomain.min}
+                            max={dataYearDomain.max}
+                            step="1"
+                            value={dataYearTo}
+                            onChange={(event) => setDataYearTo(event.target.value)}
+                            placeholder={`Any (${dataYearDomain.max})`}
+                            className="w-full rounded-lg border border-[#D5CBB8] bg-[#F9F6F0] px-3 py-2 text-sm font-normal text-slate-900"
+                          />
+                        </label>
+                      </div>
+                      {dataYearRangeInvalid ? (
+                        <p role="alert" className="mt-2 text-xs font-semibold text-[#B84A39]">From year must be earlier than or equal to To year.</p>
+                      ) : (
+                        <p className="mt-2 text-[11px] text-slate-500">Drag either handle to narrow the inclusive year range. Counts follow the current search and collection; records without a usable date are excluded only when a year limit is set.</p>
+                      )}
+                    </div>
                   </section>
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs font-bold uppercase text-[#B84A39]">WPI Research Catalog</span>
-                    <button onClick={handleExportGeoJSON} className="icon-action px-2 py-1 rounded bg-[#0F2C36] text-[#D4AF37] text-[10px] font-bold"><Icon name="download" size={13} /> Export GeoJSON</button>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-slate-700">
+                      {filteredDataRecords.length.toLocaleString()} {filteredDataRecords.length === 1 ? 'record' : 'records'}
+                    </p>
+                    {filteredDataRecords.length > 100 && (
+                      <p className="text-xs text-slate-500">Showing {Math.min(dataVisibleCount, filteredDataRecords.length).toLocaleString()} of {filteredDataRecords.length.toLocaleString()}</p>
+                    )}
                   </div>
-                  <label className="search-field">
-                    <Icon name="search" size={15} />
-                    <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search Ca' Rezzonico, Longhena..." className="w-full px-2.5 py-1.5 rounded-lg border border-[#D5CBB8] bg-white text-slate-900 text-xs" />
-                  </label>
-                  <select value={sestiereFilter} onChange={(e) => setSestiereFilter(e.target.value)} aria-label="Filter by district" className="w-full px-2.5 py-1.5 rounded-lg border border-[#D5CBB8] bg-white text-slate-900 text-xs">
-                    <option value="All">All districts</option>
-                    {[...new Set(VENICE_SITES.map((site) => site.sestiere))].sort().map((sestiere) => <option key={sestiere} value={sestiere}>{sestiere}</option>)}
-                  </select>
-                  <div className="space-y-1">
-                    {filteredCatalogSites.map((s) => (
-                      <div key={s.id} onClick={() => selectSite(s)} className="p-2 rounded-lg bg-white text-slate-900 border border-[#E2D9C8] cursor-pointer flex justify-between items-center text-xs">
-                        <span className="font-bold truncate pr-2">{s.name}</span>
-                        <span className="text-[10px] opacity-70">{s.sestiere}</span>
-                      </div>
-                    ))}
-                  </div>
+
+                  {filteredDataRecords.length > 0 ? (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {filteredDataRecords.slice(0, dataVisibleCount).map((entry) => (
+                        <button
+                          key={entry.id}
+                          type="button"
+                          onClick={() => setSelectedDataRecord(entry)}
+                          className="rounded-xl border border-[#E2D9C8] bg-white p-4 text-left shadow-sm transition hover:border-[#B84A39]/60 hover:shadow-md"
+                        >
+                          <div className="mb-2 flex flex-wrap items-center gap-2">
+                            <span className="rounded-full bg-[#0F2C36]/5 px-2.5 py-1 text-[10px] font-bold uppercase text-[#0F2C36]">{entry.collection}</span>
+                            {entry.yearLabel && <span className="text-[11px] font-semibold text-[#8F382B]">{entry.record.dateDisplay ? `${entry.record.dateDisplay} · ${entry.yearLabel}` : entry.yearLabel}</span>}
+                          </div>
+                          <h3 className="text-sm font-bold leading-snug text-[#0F2C36]" style={{ fontFamily: "'Georgia', serif" }}>{entry.title}</h3>
+                          {(entry.category || entry.place) && (
+                            <p className="mt-1 text-[11px] text-slate-500">{[entry.category, entry.place].filter(Boolean).join(' · ')}</p>
+                          )}
+                          {entry.summary && <p className="mt-2 line-clamp-3 text-xs leading-relaxed text-slate-600">{entry.summary}</p>}
+                          <span className="mt-3 inline-block text-[11px] font-semibold text-[#B84A39]">Open record →</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="rounded-xl border border-dashed border-[#D5CBB8] bg-white p-8 text-center text-sm text-slate-500">
+                      No records match these filters. Try another collection or year range.
+                    </p>
+                  )}
+                  {filteredDataRecords.length > dataVisibleCount && (
+                    <div className="text-center">
+                      <button
+                        type="button"
+                        onClick={() => setDataVisibleCount((count) => count + 100)}
+                        className="rounded-lg border border-[#D5CBB8] bg-white px-4 py-2 text-xs font-semibold text-[#0F2C36] hover:bg-[#F3EDE0]"
+                      >
+                        Load 100 more records
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
               </div>}
             </aside>
-            <button
+            {activeMode !== 'research-hub' && <button
               type="button"
               className={`panel-resizer ${sidebarCollapsed ? 'panel-resizer--hidden' : ''}`}
               role="separator"
@@ -1464,10 +2158,10 @@
               title="Drag to resize landmark panel"
             >
               <span />
-            </button>
+            </button>}
 
             {/* CENTER INTERACTIVE MAP */}
-            <main className="map-stage flex-1 relative bg-[#0B222B] overflow-hidden flex flex-col justify-between min-h-[320px]">
+            <main className={`map-stage flex-1 relative bg-[#0B222B] overflow-hidden flex flex-col justify-between min-h-[320px] ${activeMode === 'research-hub' ? 'map-stage-hidden' : ''}`}>
               {/* Top Floating Map Style Switcher */}
               <div className="z-20 m-2.5 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
                 <div className="map-glass pointer-events-auto bg-[#0F2C36]/95 text-[#F9F6F0] px-3 py-1 rounded-xl border border-[#D4AF37]/40 shadow text-xs flex items-center gap-2 reveal-on-scroll">
@@ -1517,6 +2211,16 @@
                     />
                     All inscriptions & street altars
                   </label>
+                  <label className="flex items-center gap-1.5 px-2 py-1 text-slate-200 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showAllTassiniHeritage}
+                      onChange={(event) => setShowAllTassiniHeritage(event.target.checked)}
+                      aria-label="Show all Tassini heritage points on the map"
+                      className="accent-rose-500"
+                    />
+                    All Tassini heritage
+                  </label>
                 </div>
               </div>
 
@@ -1539,7 +2243,7 @@
             </main>
 
             {/* RIGHT RESEARCH & AUDIO STORY DRAWER */}
-            {(selectedSite || selectedResearchLocation) && (
+            {activeMode !== 'research-hub' && (selectedSite || selectedResearchLocation) && (
               <>
               <button
                 type="button"
@@ -1584,6 +2288,10 @@
                       {renderAudioPlayer('Point', getResearchLocationNarration(selectedResearchLocation))}
                     </div>
                     <div className="research-drawer-body p-3.5 space-y-3 text-xs leading-relaxed">
+                      <ExhibitLabel record={selectedResearchLocation} showTitle={false} />
+                      <details className="exhibit-more">
+                        <summary>More research details</summary>
+                        <div className="mt-3 space-y-3">
                       {selectedResearchLocation.collectionLabel === 'Inscription or Street Altar' && (
                         <>
                           <div className="p-3 rounded-xl bg-teal-50 text-slate-900 border border-teal-200">
@@ -1609,6 +2317,16 @@
                           </div>
                         </>
                       )}
+                      {selectedResearchLocation.collectionLabel === 'Tassini Heritage' && (
+                        <div className="p-3 rounded-xl bg-rose-50 text-slate-900 border border-rose-200 space-y-2">
+                          <h3 className="text-[10px] font-bold uppercase text-rose-800">Tassini source details</h3>
+                          {selectedResearchLocation.tassiniWorkCited && <p><strong>Work cited:</strong> {selectedResearchLocation.tassiniWorkCited}</p>}
+                          {selectedResearchLocation.tassiniCitation && <p><strong>Page / citation:</strong> {selectedResearchLocation.tassiniCitation}</p>}
+                          {selectedResearchLocation.tassiniQuotation && <p><strong>Exact quotation:</strong> {selectedResearchLocation.tassiniQuotation}</p>}
+                          {selectedResearchLocation.englishToponymicAnalysis && <p><strong>Translation &amp; toponymic analysis:</strong> {selectedResearchLocation.englishToponymicAnalysis}</p>}
+                          {selectedResearchLocation.sourceDocument && <p><strong>Source document:</strong> {selectedResearchLocation.sourceDocument}</p>}
+                        </div>
+                      )}
                       {(selectedResearchLocation.description || selectedResearchLocation.historicalContext) && (
                         <div className="p-3 rounded-xl bg-white text-slate-900 border border-[#E2D9C8]">
                           <h3 className="text-[10px] font-bold uppercase text-[#B84A39] mb-1">Historical facts</h3>
@@ -1629,6 +2347,8 @@
                           {selectedResearchLocation.address && <div className="p-2 flex justify-between gap-3"><span className="font-semibold opacity-75">Address:</span><span className="text-right">{selectedResearchLocation.address}</span></div>}
                         </div>
                       </div>
+                        </div>
+                      </details>
                     </div>
                   </>
                 ) : selectedSite && (
@@ -1640,9 +2360,9 @@
                       <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-white/10 text-[#D4AF37]">{selectedSite.category}</span>
                     </div>
                     <div className="flex items-center gap-1">
-                      <button onClick={() => setShowGoogleEmbedModal(true)} className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white">
+                      {activeMode !== 'research-hub' && <button onClick={() => setShowGoogleEmbedModal(true)} className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white">
                         🌍 Google Map View
-                      </button>
+                      </button>}
                       <button type="button" onClick={closeLocationDetails} className="text-[10px] font-bold px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-white" aria-label="Close location details">
                         ✕
                       </button>
@@ -1654,8 +2374,12 @@
                   {renderAudioPlayer('Story', getSiteNarration(selectedSite))}
                 </div>
 
-                {/* Standardized 8-Point WPI Research Questions Body */}
+                {/* Standardized 8-Point Research Questions Body */}
                 <div className="research-drawer-body p-3.5 space-y-3 text-xs leading-relaxed">
+                  <ExhibitLabel record={selectedSite} showTitle={false} />
+                  <details className="exhibit-more">
+                    <summary>More historical context &amp; research</summary>
+                    <div className="mt-3 space-y-3">
                   <div className="p-3 rounded-xl bg-white text-slate-900 border border-[#E2D9C8]">
                     <h3 className="text-[10px] font-bold uppercase text-[#B84A39] mb-1">📖 Narrative & Historical Context</h3>
                     <p>{selectedSite.narrativeScript}</p>
@@ -1685,6 +2409,8 @@
                       <div className="p-2 flex justify-between gap-3"><span className="font-semibold opacity-75">Anti-Looting:</span><span className="text-right">{selectedSite.lootingRisk}</span></div>
                     </div>
                   </div>
+                    </div>
+                  </details>
                 </div>
                   </>
                 )}
@@ -1709,7 +2435,7 @@
                       Plan a walking route <Icon name="arrow" size={16} />
                     </button>
                     <button type="button" onClick={() => setActiveMode('research-hub')} className="home-secondary-action">
-                      Explore WPI research
+                      Explore Data
                     </button>
                   </div>
                 </div>
@@ -1728,7 +2454,7 @@
                   <div className="home-route-preview-stops">
                     <span>Historic landmarks</span>
                     <span>Walking route</span>
-                    <span>WPI research</span>
+                    <span>Data collections</span>
                   </div>
                   <p>Choose places to visit and explore their stories along the way.</p>
                 </div>
@@ -1746,11 +2472,190 @@
                 </article>
                 <article>
                   <span className="home-feature-number">03</span>
-                  <h3>Discover the research</h3>
-                  <p>Browse churches, guilds, doges, inscriptions, and other collections from WPI Venice projects.</p>
+                  <h3>Explore the Data</h3>
+                  <p>Browse landmarks, churches, guilds, doges, inscriptions, and the Venice history timeline.</p>
                 </article>
               </section>
             </main>
+          )}
+
+          {showTodayHistoryPopup && activeMode === 'home' && todayHistoryEvent && (
+            <div
+              className="fixed inset-0 z-[70] flex items-center justify-center bg-[#07171D]/80 p-3 backdrop-blur-sm sm:p-6"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) setShowTodayHistoryPopup(false);
+              }}
+            >
+              <section
+                className="relative flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-[#D4AF37]/60 bg-[#F9F6F0] text-[#1A252C] shadow-2xl"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="today-history-title"
+              >
+                <header className="flex items-start justify-between gap-4 border-b border-[#D4AF37]/40 bg-[#0F2C36] px-5 py-4 text-white">
+                  <div>
+                    <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#D4AF37]">Venice through time</span>
+                    <h2 id="today-history-title" className="mt-1 text-xl font-bold" style={{ fontFamily: "'Georgia', serif" }}>
+                      Today in Venice History
+                    </h2>
+                    <p className="mt-1 text-xs text-slate-300">{todayHistoryEvent.dateDisplay} · A moment from the past</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowTodayHistoryPopup(false)}
+                    className="rounded-lg px-2.5 py-1.5 text-sm text-slate-200 hover:bg-white/10 hover:text-white"
+                    aria-label="Close today's history"
+                  >
+                    ✕
+                  </button>
+                </header>
+                <div className="space-y-3 overflow-y-auto p-4 sm:p-5">
+                  <article className="rounded-xl border border-[#E2D9C8] bg-white p-4 shadow-sm">
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <span className="rounded-full bg-[#B84A39]/10 px-2.5 py-1 text-xs font-bold text-[#8F382B]">{todayHistoryEvent.year}</span>
+                      {todayHistoryEvent.category && <span className="text-[11px] font-semibold text-slate-600">{todayHistoryEvent.category}</span>}
+                      {todayHistoryEvent.location && <span className="text-[11px] text-slate-500">· {todayHistoryEvent.location}</span>}
+                    </div>
+                    <h3 className="text-sm font-bold leading-snug text-[#0F2C36]" style={{ fontFamily: "'Georgia', serif" }}>
+                      {todayHistoryEvent.headline}
+                    </h3>
+                    <p className="mt-2 text-sm leading-relaxed text-slate-700">{todayHistoryEvent.text}</p>
+                    {(todayHistoryEvent.citation || todayHistoryEvent.sourceDocument) && (
+                      <details className="mt-3 border-t border-[#E2D9C8] pt-2 text-xs text-slate-600">
+                        <summary className="cursor-pointer font-semibold text-[#0F2C36]">Source details</summary>
+                        {todayHistoryEvent.citation && <p className="mt-2">{todayHistoryEvent.citation}</p>}
+                        {todayHistoryEvent.sourceDocument && <p className="mt-1 text-[11px]">{todayHistoryEvent.sourceDocument}</p>}
+                      </details>
+                    )}
+                  </article>
+                </div>
+                <footer className="border-t border-[#E2D9C8] bg-[#F3EDE0] px-5 py-3 text-right">
+                  <button
+                    type="button"
+                    onClick={() => setShowTodayHistoryPopup(false)}
+                    className="rounded-lg bg-[#0F2C36] px-4 py-2 text-xs font-semibold text-white hover:bg-[#194554]"
+                  >
+                    Continue exploring
+                  </button>
+                </footer>
+              </section>
+            </div>
+          )}
+
+          {selectedDataRecord && activeMode === 'research-hub' && (
+            <div
+              className="fixed inset-0 z-[70] flex items-center justify-center bg-[#07171D]/80 p-3 backdrop-blur-sm sm:p-6"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) setSelectedDataRecord(null);
+              }}
+            >
+              <section
+                className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-[#D4AF37]/60 bg-[#F9F6F0] text-[#1A252C] shadow-2xl"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="data-record-title"
+                onMouseDown={(event) => event.stopPropagation()}
+              >
+                <header className="flex items-start justify-between gap-4 border-b border-[#D4AF37]/40 bg-[#0F2C36] px-5 py-4 text-white">
+                  <div className="min-w-0">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#D4AF37]">{selectedDataRecord.collection}</span>
+                    <h2 id="data-record-title" className="mt-1 text-xl font-bold leading-snug" style={{ fontFamily: "'Georgia', serif" }}>
+                      {selectedDataRecord.title}
+                    </h2>
+                    <p className="mt-1 text-xs text-slate-300">
+                      {[selectedDataRecord.yearLabel, selectedDataRecord.place].filter(Boolean).join(' · ')}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedDataRecord(null)}
+                    className="rounded-lg px-2.5 py-1.5 text-sm text-slate-200 hover:bg-white/10 hover:text-white"
+                    aria-label="Close data record"
+                  >
+                    ✕
+                  </button>
+                </header>
+                <div className="space-y-4 overflow-y-auto p-4 sm:p-5">
+                  {selectedDataRecord.collection !== 'Today in Venice History Timeline' && (
+                    <ExhibitLabel record={selectedDataRecord.record} showTitle={false} />
+                  )}
+                  {selectedDataRecord.record.text && (
+                    <section className="rounded-xl border border-[#E2D9C8] bg-white p-4">
+                      <h3 className="text-xs font-bold uppercase text-[#B84A39]">Historical account</h3>
+                      <p className="mt-2 text-sm leading-relaxed text-slate-700">{selectedDataRecord.record.text}</p>
+                    </section>
+                  )}
+                  <details className="rounded-xl border border-[#E2D9C8] bg-white p-4">
+                    <summary className="cursor-pointer text-sm font-semibold text-[#0F2C36]">More record details</summary>
+                    <div className="mt-3 space-y-3 text-sm leading-relaxed text-slate-700">
+                      {selectedDataRecord.record.description && (
+                        <p><strong>Description:</strong> {selectedDataRecord.record.description}</p>
+                      )}
+                      {selectedDataRecord.record.historicalContext && (
+                        <p><strong>Historical context:</strong> {selectedDataRecord.record.historicalContext}</p>
+                      )}
+                      {selectedDataRecord.record.narrativeScript && (
+                        <p><strong>Narrative:</strong> {selectedDataRecord.record.narrativeScript}</p>
+                      )}
+                      {selectedDataRecord.record.contributionToHistory && (
+                        <p><strong>Contribution to history:</strong> {selectedDataRecord.record.contributionToHistory}</p>
+                      )}
+                      {selectedDataRecord.record.routeConnection && (
+                        <p><strong>Route connection:</strong> {selectedDataRecord.record.routeConnection}</p>
+                      )}
+                      {selectedDataRecord.record.funFactlet && (
+                        <p><strong>Did you know?</strong> {selectedDataRecord.record.funFactlet}</p>
+                      )}
+                      {selectedDataRecord.record.tassiniNote && (
+                        <p><strong>Tassini note:</strong> {selectedDataRecord.record.tassiniNote}</p>
+                      )}
+                      {selectedDataRecord.record.address && (
+                        <p><strong>Address:</strong> {selectedDataRecord.record.address}</p>
+                      )}
+                      {selectedDataRecord.record.island && (
+                        <p><strong>Island:</strong> {selectedDataRecord.record.island}</p>
+                      )}
+                      {selectedDataRecord.record.originalText && (
+                        <p><strong>Original inscription:</strong> {selectedDataRecord.record.originalText}</p>
+                      )}
+                      {selectedDataRecord.record.englishTranslation && (
+                        <p><strong>English translation:</strong> {selectedDataRecord.record.englishTranslation}</p>
+                      )}
+                      {selectedDataRecord.record.italianTranslation && (
+                        <p><strong>Italian translation:</strong> {selectedDataRecord.record.italianTranslation}</p>
+                      )}
+                      {selectedDataRecord.record.conditionNotes && (
+                        <p><strong>Condition:</strong> {selectedDataRecord.record.conditionNotes}</p>
+                      )}
+                      {selectedDataRecord.record.tassiniQuotation && (
+                        <p><strong>Tassini quotation:</strong> {selectedDataRecord.record.tassiniQuotation}</p>
+                      )}
+                      {selectedDataRecord.record.englishToponymicAnalysis && (
+                        <p><strong>Translation &amp; toponymic analysis:</strong> {selectedDataRecord.record.englishToponymicAnalysis}</p>
+                      )}
+                      {(selectedDataRecord.record.citation || selectedDataRecord.record.tassiniCitation
+                        || selectedDataRecord.record.sourceDocument) && (
+                        <div className="border-t border-[#E2D9C8] pt-3 text-xs">
+                          <h3 className="font-bold uppercase text-[#0F2C36]">Sources</h3>
+                          {selectedDataRecord.record.citation && <p className="mt-1">{selectedDataRecord.record.citation}</p>}
+                          {selectedDataRecord.record.tassiniCitation && <p className="mt-1">{selectedDataRecord.record.tassiniCitation}</p>}
+                          {selectedDataRecord.record.sourceDocument && <p className="mt-1">{selectedDataRecord.record.sourceDocument}</p>}
+                        </div>
+                      )}
+                    </div>
+                  </details>
+                </div>
+                <footer className="border-t border-[#E2D9C8] bg-[#F3EDE0] px-5 py-3 text-right">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedDataRecord(null)}
+                    className="rounded-lg bg-[#0F2C36] px-4 py-2 text-xs font-semibold text-white hover:bg-[#194554]"
+                  >
+                    Back to Data
+                  </button>
+                </footer>
+              </section>
+            </div>
           )}
 
           {showStopPicker && activeMode === 'route-builder' && (
@@ -1776,16 +2681,21 @@
                   <button type="button" onClick={closeStopPicker} aria-label="Close location chooser">✕</button>
                 </header>
                 <div className="stop-picker-list">
-                  {VENICE_SITES.filter((site) => site.type !== 'submerged').map((site) => {
+                  {VENICE_SITES
+                    .filter((site) => site.type !== 'submerged'
+                      && isWithinBuiltYearRange(site)
+                      && (useBoats || !site.requiresBoat || draftStopIds.includes(site.id)))
+                    .map((site) => {
                     const isSelected = draftStopIds.includes(site.id);
+                    const requiresUnavailableBoat = !useBoats && site.requiresBoat;
                     const isUnavailable = accessibleOnly && !site.accessibleStepFree;
                     const cannotAddMore = !isSelected && draftStopIds.length >= 5;
                     return (
-                      <label key={site.id} className={`stop-picker-option ${isSelected ? 'stop-picker-option--selected' : ''} ${isUnavailable || cannotAddMore ? 'stop-picker-option--disabled' : ''}`}>
+                      <label key={site.id} className={`stop-picker-option ${isSelected ? 'stop-picker-option--selected' : ''} ${isUnavailable || cannotAddMore || requiresUnavailableBoat ? 'stop-picker-option--disabled' : ''}`}>
                         <input
                           type="checkbox"
                           checked={isSelected}
-                          disabled={isUnavailable || cannotAddMore}
+                          disabled={isUnavailable || cannotAddMore || requiresUnavailableBoat}
                           onChange={() => setDraftStopIds((current) => (
                             isSelected
                               ? current.filter((id) => id !== site.id)
@@ -1795,20 +2705,26 @@
                         <span className="stop-picker-number">{isSelected ? draftStopIds.indexOf(site.id) + 1 : '＋'}</span>
                         <span className="stop-picker-location">
                           <span>{site.name}</span>
-                          <small>{site.sestiere} · {site.accessibleStepFree ? 'Step-free access' : 'Steps'}</small>
+                          <small>{requiresUnavailableBoat ? 'Boat required · deselect to remove' : `${site.sestiere} · ${site.accessibleStepFree ? 'Step-free access' : 'Steps'}`}</small>
                         </span>
                       </label>
                     );
                   })}
                 </div>
                 <footer className="stop-picker-footer">
-                  <span>{draftStopIds.length === 5 ? '5 of 5 selected · deselect one to change' : `${draftStopIds.length} of 5 locations selected`}</span>
+                  <span aria-live="polite">
+                    {!useBoats && draftStopIds.some((id) => VENICE_SITES.find((item) => item.id === id)?.requiresBoat)
+                      ? 'Deselect landmarks that require a boat to continue'
+                      : draftStopIds.length === 5
+                        ? '5 of 5 selected · deselect one to change'
+                        : `${draftStopIds.length} of 5 locations selected`}
+                  </span>
                   <div>
                     <button type="button" onClick={closeStopPicker} className="stop-picker-cancel">Cancel</button>
                     <button
                       type="button"
                       onClick={applyStopSelection}
-                      disabled={draftStopIds.length < 1}
+                      disabled={draftStopIds.length < 1 || builtYearRangeInvalid || (!useBoats && draftStopIds.some((id) => VENICE_SITES.find((item) => item.id === id)?.requiresBoat))}
                       className="stop-picker-apply"
                     >
                       Use these locations
